@@ -63,9 +63,17 @@ def find_clusters(linked_pairs: set) -> list[set]:
                 clusters.append(current_cluster)
     return clusters
 
-def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, str], int, set[tuple[str, str]]]:
-    """Loads existing clusters, determines next cluster ID, and extracts existing links."""
-    sample_to_cluster = {}
+def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, set[str]], dict[str, str], int, set[tuple[str, str]]]:
+    """
+    Loads existing clusters from a file.
+    Returns:
+        - existing_clusters_map: Dict mapping cluster_name -> set(samples)
+        - sample_to_cluster_map: Dict mapping sample -> cluster_name
+        - max_cluster_num: The highest cluster number found (e.g., 2 for Cluster_2)
+        - existing_links: Set of tuples representing links implied by cluster membership
+    """
+    existing_clusters_map = {}
+    sample_to_cluster_map = {}
     existing_links = set()
     max_cluster_num = 0
     if cluster_file_path.is_file():
@@ -85,21 +93,22 @@ def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, str], int
                                 continue # Skip this line
 
                             samples = [s.strip() for s in samples_str.split(',') if s.strip()]
+                            cluster_sample_set = set(samples)
+                            existing_clusters_map[cluster_name] = cluster_sample_set
+                            for sample in samples:
+                                sample_to_cluster_map[sample] = cluster_name
+                            # Add links between all samples in the existing cluster
                             if len(samples) >= 2:
-                                # Add links between all samples in the existing cluster
                                 for i in range(len(samples)):
-                                    sample_to_cluster[samples[i]] = cluster_name
                                     for j in range(i + 1, len(samples)):
                                         existing_links.add(tuple(sorted((samples[i], samples[j]))))
-                            elif len(samples) == 1:
-                                 sample_to_cluster[samples[0]] = cluster_name # Store singleton cluster info
                         else:
                              print(f"Warning: Skipping malformed line in {cluster_file_path}: {line.strip()}", file=sys.stderr)
         except IOError as e:
             print(f"Warning: Could not read existing cluster file {cluster_file_path}: {e}", file=sys.stderr)
-    next_cluster_id = max_cluster_num + 1
-    print(f"Existing links loaded: {len(existing_links)}. Next cluster ID: {next_cluster_id}", file=sys.stderr)
-    return sample_to_cluster, next_cluster_id, existing_links
+    # next_cluster_id logic moved to main clustering section
+    print(f"Loaded {len(existing_clusters_map)} existing clusters. Max cluster number: {max_cluster_num}. Implied links: {len(existing_links)}.", file=sys.stderr)
+    return existing_clusters_map, sample_to_cluster_map, max_cluster_num, existing_links
 
 
 def main():
@@ -107,6 +116,7 @@ def main():
     parser.add_argument("reads_dir", type=Path, help="Directory containing input FASTQ files (e.g., .../reads/).")
     parser.add_argument("base_dir", type=Path, help="Base directory for the pipeline scripts and data subdirectories (Reports, HCV_Kmers, etc.).")
     parser.add_argument("--keep_tmp", action='store_true', help="Keep temporary run directories.")
+    parser.add_argument("--keep_unmerged", action='store_true', help="Keep unmerged reads from the combine step.") # New argument
     parser.add_argument("--combine_script", type=str, default="HCV_combine_reads_V0_1.py", help="Name of the combine reads script.")
     parser.add_argument("--distancer_script", type=str, default="HCV_kmers_distancer_V0_1.py", help="Name of the kmer distancer script.")
     parser.add_argument("--transmission_script", type=str, default="HCV_transmission_test_V0_2.py", help="Name of the transmission test script.")
@@ -114,8 +124,6 @@ def main():
     parser.add_argument("--kmer_overlap_threshold", type=float, default=0.05, help="Threshold for k-mer overlap ratio to trigger transmission test.")
     parser.add_argument("--snp_dists_path", type=str, default="snp-dists", help="Path to the snp-dists executable.")
     parser.add_argument("--rscript_path", type=str, default="Rscript", help="Path to the Rscript executable.")
-
-
     args = parser.parse_args()
 
     # --- Validate paths and setup directories ---
@@ -152,8 +160,11 @@ def main():
 
     # --- Load Existing Clusters ---
     cluster_file_path = reports_dir / "clusters.txt"
-    initial_sample_to_cluster, next_cluster_id, linked_pairs = load_existing_clusters(cluster_file_path)
-    newly_linked_pairs_this_run = set() # Track only links found in this run
+    # Load existing cluster state
+    existing_clusters_map, initial_sample_to_cluster, max_cluster_num, existing_links = load_existing_clusters(cluster_file_path)
+    # Combine existing links with newly found links for downstream processing if needed, but clustering logic below uses only *new* links to modify state
+    all_linked_pairs = existing_links.copy() # Start with links implied by existing clusters
+    newly_linked_pairs_this_run = set() # Track only links found *in this specific run*
 
     # --- Step 1: Combine Reads ---
     print("--- Running Step 1: Combine Reads ---", file=sys.stderr)
@@ -210,6 +221,10 @@ def main():
                 f_out.write("--- Combine Reads Output ---\n")
 
             combine_args = [str(args.base_dir), str(r1_file), str(temp_run_dir)]
+            # Pass down the keep_unmerged flag if set
+            if args.keep_unmerged:
+                combine_args.append("--keep_unmerged")
+
             return_code, stdout = run_script(combine_script_path, combine_args, capture_stdout=True)
 
             with open(report_file, 'a') as f_out:
@@ -405,10 +420,12 @@ def main():
                                                         # This ensures we capture the true minimum if multiple pairs are <= 10
                                                         # print(f"Found SNP link candidate (dist={dist} <= 10) between {sample_prefix} and {subject_prefix}", file=sys.stderr)
                                                         link_tuple = tuple(sorted((sample_prefix, subject_prefix)))
-                                                        linked_pairs.add(link_tuple)
+                                                        # Add to *both* sets: all_linked_pairs for potential downstream use,
+                                                        # and newly_linked_pairs_this_run for the stateful clustering logic
+                                                        all_linked_pairs.add(link_tuple)
                                                         newly_linked_pairs_this_run.add(link_tuple) # Track new links
                                                         snp_link_found = True # Mark that *a* link <= 10 was found for this pair
-                                                        # We already update min_snp_dist_for_pair in line 402
+                                                        # We already update min_snp_dist_for_pair in line 413 (corrected line number)
                                                 except ValueError:
                                                     print(f"Warning: Could not parse distance '{dist_str}' as integer in {pair_snp_list_file.name} line {line_num}", file=sys.stderr)
                                 except Exception as e:
@@ -476,35 +493,132 @@ def main():
                 print(f"Keeping temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
 
 
-    # --- Step 3: Clustering, Reporting Clusters, and Plotting ---
-    print("\n--- Running Step 3: Clustering Linked Samples & Plotting ---", file=sys.stderr)
-    clusters = find_clusters(linked_pairs) # Use all links found (old + new)
+    # --- Step 3: Stateful Clustering Update ---
+    print("\n--- Running Step 3: Stateful Clustering Update ---", file=sys.stderr)
+    # Initialize current state from loaded data
+    current_clusters = existing_clusters_map.copy() # {cluster_name: {samples}}
+    current_sample_to_cluster = initial_sample_to_cluster.copy() # {sample: cluster_name}
+    next_cluster_id_counter = max_cluster_num + 1
+    clusters_to_delete = set() # Track names of clusters removed by merging
+
+    # Track changes for reporting
+    report_events = defaultdict(list) # {sample: ["event description", ...]}
+    merged_cluster_log = {} # {removed_cluster_name: merged_into_cluster_name}
+    modified_clusters_this_run = set() # Track clusters created/modified in this run
+
+    print(f"Processing {len(newly_linked_pairs_this_run)} new links found in this run.", file=sys.stderr)
+    new_cluster_candidates = set() # Samples involved in new links but not in existing clusters
+    new_links_for_new_clusters = set() # Links between samples not initially in clusters
+
+    # --- Process newly found links to update cluster state ---
+    for s1, s2 in newly_linked_pairs_this_run:
+        c1 = current_sample_to_cluster.get(s1)
+        c2 = current_sample_to_cluster.get(s2)
+
+        # Case 1: Link merges two existing, different clusters
+        if c1 and c2 and c1 != c2 and c1 not in clusters_to_delete and c2 not in clusters_to_delete:
+            num1 = int(c1.split('_')[-1])
+            num2 = int(c2.split('_')[-1])
+            if num1 < num2:
+                keep_c, remove_c = c1, c2
+            else:
+                keep_c, remove_c = c2, c1
+
+            if remove_c not in clusters_to_delete: # Ensure we haven't already decided to remove this one
+                print(f"Merging cluster {remove_c} into {keep_c} due to link between {s1} and {s2}", file=sys.stderr)
+                samples_to_move = current_clusters.get(remove_c, set())
+                current_clusters[keep_c].update(samples_to_move)
+                modified_clusters_this_run.add(keep_c) # Mark target cluster as modified
+                for sample in samples_to_move:
+                    current_sample_to_cluster[sample] = keep_c # Update mapping
+                clusters_to_delete.add(remove_c)
+                merged_cluster_log[remove_c] = keep_c
+                # Report event for samples involved in the *link* causing the merge
+                final_members = sorted(list(current_clusters[keep_c]))
+                merge_msg = f"caused merge of {remove_c} into {keep_c} -> {', '.join(final_members)}"
+                report_events[s1].append(merge_msg)
+                report_events[s2].append(merge_msg)
+                # We might want a more global merge report message later
+
+        # Case 2: Link adds a new sample to an existing cluster
+        elif c1 and not c2 and c1 not in clusters_to_delete: # s1 in cluster, s2 is new
+            print(f"Adding sample {s2} to cluster {c1} due to link with {s1}", file=sys.stderr)
+            current_clusters[c1].add(s2)
+            current_sample_to_cluster[s2] = c1
+            modified_clusters_this_run.add(c1) # Mark cluster as modified
+            report_events[s2].append(f"added to existing cluster {c1}")
+        elif c2 and not c1 and c2 not in clusters_to_delete: # s2 in cluster, s1 is new
+            print(f"Adding sample {s1} to cluster {c2} due to link with {s2}", file=sys.stderr)
+            current_clusters[c2].add(s1)
+            current_sample_to_cluster[s1] = c2
+            modified_clusters_this_run.add(c2) # Mark cluster as modified
+            report_events[s1].append(f"added to existing cluster {c2}")
+
+        # Case 3: Link is between samples already in the same cluster (or a cluster marked for deletion)
+        elif c1 and c2 and c1 == c2:
+             # No structural change, but note for report that they are linked within the cluster
+             if c1 not in clusters_to_delete: # Only report if the cluster still exists
+                 report_events[s1].append(f"linked within {c1}")
+                 report_events[s2].append(f"linked within {c1}")
+             pass # Already in the same cluster
+
+        # Case 4: Link is between two samples not currently in any cluster
+        elif not c1 and not c2:
+            new_cluster_candidates.add(s1)
+            new_cluster_candidates.add(s2)
+            new_links_for_new_clusters.add(tuple(sorted((s1, s2))))
+
+    # --- Find and create completely new clusters from remaining candidates ---
+    if new_links_for_new_clusters:
+        print(f"Finding new clusters among {len(new_cluster_candidates)} candidates using {len(new_links_for_new_clusters)} links.", file=sys.stderr)
+        newly_formed_clusters = find_clusters(new_links_for_new_clusters)
+        for new_cluster_set in newly_formed_clusters:
+            new_cluster_name = f"Cluster_{next_cluster_id_counter}"
+            print(f"Creating new {new_cluster_name} with samples: {', '.join(sorted(list(new_cluster_set)))}", file=sys.stderr)
+            current_clusters[new_cluster_name] = new_cluster_set
+            modified_clusters_this_run.add(new_cluster_name) # Mark new cluster
+            for sample in new_cluster_set:
+                current_sample_to_cluster[sample] = new_cluster_name
+                report_events[sample].append(f"formed new cluster {new_cluster_name}")
+            next_cluster_id_counter += 1
+
+    # --- Write the final cluster state to file ---
     cluster_file_path = reports_dir / "clusters.txt"
-    final_sample_to_cluster = {} # To track final cluster assignment for run report
-    cluster_info_for_plotting = [] # Store info needed for plotting loop
+    final_cluster_count = 0
+    cluster_info_for_plotting = [] # Reset and populate with final state
+    final_sample_to_cluster_map = {} # Create final map for reporting
 
     try:
         with open(cluster_file_path, "w") as f_cluster:
-            if not clusters:
-                print("No linked clusters found based on SNP distance <= 10.", file=sys.stderr)
-                f_cluster.write("No linked clusters found.\n")
-            else:
-                print(f"Found {len(clusters)} cluster(s). Writing to {cluster_file_path}", file=sys.stderr)
-                for i, cluster_set in enumerate(clusters):
-                    # Use next_cluster_id for consistent naming across runs
-                    cluster_name = f"Cluster_{next_cluster_id + i}"
-                    sorted_samples = sorted(list(cluster_set))
-                    f_cluster.write(f"{cluster_name}\t{','.join(sorted_samples)}\n")
-                    print(f"  {cluster_name}: {','.join(sorted_samples)}", file=sys.stderr)
-                    for s in sorted_samples: final_sample_to_cluster[s] = cluster_name # Track assignment
-                    # Store info for plotting later
+            # Sort clusters by number for consistent output
+            sorted_cluster_names = sorted(current_clusters.keys(), key=lambda name: int(name.split('_')[-1]))
+
+            for cluster_name in sorted_cluster_names:
+                if cluster_name not in clusters_to_delete:
+                    final_cluster_count += 1
+                    samples_in_cluster = sorted(list(current_clusters[cluster_name]))
+                    f_cluster.write(f"{cluster_name}\t{','.join(samples_in_cluster)}\n")
+                    # Store info for plotting
                     cluster_info_for_plotting.append({
                         "name": cluster_name,
-                        "samples": sorted_samples
+                        "samples": samples_in_cluster
                     })
-                files_to_send.append(cluster_file_path) # Add cluster file to potential email list
+                    # Update final map for reporting
+                    for s in samples_in_cluster:
+                        final_sample_to_cluster_map[s] = cluster_name
+
+            if final_cluster_count == 0:
+                 f_cluster.write("No linked clusters found.\n")
+                 print("No final linked clusters to write.", file=sys.stderr)
+            else:
+                 print(f"Wrote {final_cluster_count} final cluster(s) to {cluster_file_path}", file=sys.stderr)
+                 files_to_send.append(cluster_file_path)
+
     except IOError as e:
-        print(f"Error writing cluster file {cluster_file_path}: {e}", file=sys.stderr)
+        print(f"Error writing final cluster file {cluster_file_path}: {e}", file=sys.stderr)
+
+    # Note: final_sample_to_cluster_map now holds the definitive cluster assignment for each sample
+    # The report generation logic later needs to be updated to use this map and the report_events dictionary.
 
     # --- Step 3b: Generate Cluster Plots (Looping after cluster file is written) ---
     print("\n--- Running Step 3b: Generating Cluster Plots ---", file=sys.stderr)
@@ -514,17 +628,26 @@ def main():
         for cluster_info in cluster_info_for_plotting:
             cluster_name = cluster_info["name"]
             sorted_samples = cluster_info["samples"]
-
-            print(f"--- Generating t-SNE plot for {cluster_name} ---", file=sys.stderr)
-            cluster_temp_dir = None # Initialize for finally block
+            '''
+            # --- Check if cluster needs processing ---
+            if cluster_name not in modified_clusters_this_run:
+                print(f"--- Skipping analysis for unchanged {cluster_name} ---", file=sys.stderr)
+                # Still need to ensure the plot file is added to email list if it exists
+                final_pdf_path = reports_dir / f"{cluster_name}_tsne.pdf"
+                if final_pdf_path.is_file():
+                     files_to_send.append(final_pdf_path)
+                continue # Skip to the next cluster
+            '''
+            print(f"--- Analyzing and Generating Plot for {cluster_name} ---", file=sys.stderr)
+            cluster_analysis_dir = None # Initialize for error handling before creation
             try:
-                # Create a temporary directory for this cluster's analysis
-                cluster_temp_dir_path = tempfile.mkdtemp(prefix=f'{cluster_name}_', dir=args.base_dir)
-                cluster_temp_dir = Path(cluster_temp_dir_path)
-                print(f"Created temporary directory for cluster plot: {cluster_temp_dir}", file=sys.stderr)
+                # Create a persistent directory for this cluster's analysis
+                cluster_analysis_dir = args.base_dir / cluster_name
+                cluster_analysis_dir.mkdir(parents=True, exist_ok=True)
+                print(f"Using analysis directory for cluster: {cluster_analysis_dir}", file=sys.stderr)
 
                 # 1. Combine FASTA files for cluster members
-                cluster_combined_fasta = cluster_temp_dir / f"{cluster_name}_combined.fasta" # Use specific name
+                cluster_combined_fasta = cluster_analysis_dir / f"{cluster_name}_combined.fasta" # Use specific name
                 cluster_fasta_files = []
                 with open(cluster_combined_fasta, "wb") as f_out_cat:
                     for sample in sorted_samples:
@@ -544,10 +667,10 @@ def main():
                     continue # Skip plot generation for this cluster
 
                 # 2. Align combined FASTA using MAFFT (Docker)
-                cluster_aligned_fasta = cluster_temp_dir / f"{cluster_name}_aligned.fasta" # Use specific name
+                cluster_aligned_fasta = cluster_analysis_dir / f"{cluster_name}_aligned.fasta" # Use specific name
                 mafft_docker_cmd = [
                     "docker", "run", "--rm",
-                    "-v", f"{cluster_temp_dir.resolve()}:/data", # Use resolved path for docker volume
+                    "-v", f"{cluster_analysis_dir.resolve()}:/data", # Use resolved path for docker volume
                     "pegi3s/mafft",
                     "mafft", "--adjustdirection", "--auto", "--quiet", "--thread", "1", "--reorder",
                     f"/data/{cluster_combined_fasta.name}"
@@ -558,7 +681,7 @@ def main():
                     # Log MAFFT command to stderr
                     print(f"Running MAFFT command for {cluster_name}: {' '.join(mafft_docker_cmd)}", file=sys.stderr)
                     with open(cluster_aligned_fasta, 'w') as f_out_aln:
-                        proc_mafft = subprocess.run(mafft_docker_cmd, cwd=cluster_temp_dir, text=True, capture_output=True, check=True)
+                        proc_mafft = subprocess.run(mafft_docker_cmd, cwd=cluster_analysis_dir, text=True, capture_output=True, check=True)
                         f_out_aln.write(proc_mafft.stdout)
                         if proc_mafft.stderr:
                             # Print MAFFT stderr directly
@@ -577,7 +700,7 @@ def main():
                     continue # Skip to next cluster
 
                 # 3. Generate distance matrix using snp-dists
-                cluster_pmatrix_file = cluster_temp_dir / f"{cluster_name}_ident.pmatrix" # Use specific name
+                cluster_pmatrix_file = cluster_analysis_dir / f"{cluster_name}_ident.pmatrix" # Use specific name
                 # Use absolute paths in command string for robustness, use -m flag
                 snp_dists_cmd_str = f"{args.snp_dists_path} -m {cluster_aligned_fasta.resolve()} > {cluster_pmatrix_file.resolve()}"
                 print(f"Running snp-dists for {cluster_name}: {snp_dists_cmd_str}", file=sys.stderr)
@@ -586,7 +709,7 @@ def main():
                     # Log snp-dists command to stderr
                     print(f"Running snp-dists command for {cluster_name}: {snp_dists_cmd_str}", file=sys.stderr)
 
-                    proc_snp = subprocess.run(snp_dists_cmd_str, shell=True, cwd=cluster_temp_dir, text=True, capture_output=True, check=False)
+                    proc_snp = subprocess.run(snp_dists_cmd_str, shell=True, cwd=cluster_analysis_dir, text=True, capture_output=True, check=False)
                     snp_dist_ret = proc_snp.returncode
 
                     if snp_dist_ret != 0:
@@ -616,7 +739,7 @@ def main():
                 r_ret = 1 # Default to error
                 try:
                     # Execute Rscript, capture output
-                    r_process = subprocess.run(r_cmd_list, cwd=cluster_temp_dir, text=True, capture_output=True, check=False) # Run in cluster temp dir
+                    r_process = subprocess.run(r_cmd_list, cwd=cluster_analysis_dir, text=True, capture_output=True, check=False) # Run in cluster analysis dir
                     r_ret = r_process.returncode
                     if r_ret != 0:
                         print(f"Error: R script failed for {cluster_name} plot (exit code {r_ret}).", file=sys.stderr)
@@ -629,7 +752,7 @@ def main():
                 # 5. Move and rename plot
                 # Construct expected PDF name based on the pmatrix filename used as input for R
                 temp_pdf_output_name = cluster_pmatrix_file.stem + "_tsne.pdf" # e.g., Cluster_1_ident_tsne.pdf
-                temp_pdf_output_path = cluster_temp_dir / temp_pdf_output_name
+                temp_pdf_output_path = cluster_analysis_dir / temp_pdf_output_name # PDF is created in the analysis dir
                 final_pdf_path = reports_dir / f"{cluster_name}_tsne.pdf"
 
                 if r_ret == 0 and temp_pdf_output_path.is_file():
@@ -647,15 +770,6 @@ def main():
 
             except Exception as cluster_e:
                  print(f"Error processing cluster {cluster_name} for plotting: {cluster_e}", file=sys.stderr)
-            finally:
-                # Clean up temporary directory for the cluster plot generation
-                if cluster_temp_dir and cluster_temp_dir.exists() and not args.keep_tmp:
-                    print(f"Removing temporary cluster directory: {cluster_temp_dir}", file=sys.stderr)
-                    shutil.rmtree(cluster_temp_dir, ignore_errors=True)
-                elif cluster_temp_dir and cluster_temp_dir.exists() and args.keep_tmp:
-                    print(f"Keeping temporary cluster directory: {cluster_temp_dir}", file=sys.stderr)
-            # --- End Cluster Plot Generation ---
-
 
 
     # --- Generate Run Report ---
@@ -663,85 +777,111 @@ def main():
     run_report_file = reports_dir / f"Run_Report_{datetime.date.today()}.txt"
     try:
         # Create a map of sample -> final cluster details for easy lookup
-        final_cluster_details = {}
-        for i, cluster_set in enumerate(clusters):
-             cluster_name = f"Cluster_{next_cluster_id + i}"
-             sorted_samples_in_cluster = sorted(list(cluster_set))
-             for sample in sorted_samples_in_cluster:
-                  final_cluster_details[sample] = {
-                       "name": cluster_name,
-                       "members": sorted_samples_in_cluster
-                  }
+        # final_sample_to_cluster_map is created in Step 3
+        # report_events is created in Step 3
 
         with open(run_report_file, "w") as f_report:
-            f_report.write(f"Pipeline Run Report - {datetime.datetime.now()}\n\n") # Add newline after header
-            # Removed initial separator
+            f_report.write(f"Pipeline Run Report - {datetime.datetime.now()}\n\n")
 
-            # Use run_report_lines which contains sample headers and link info/errors
-            current_sample = None
+            processed_samples_in_report = set() # Keep track of samples added
+
+            # Iterate through the samples based on the order they appear in run_report_lines
+            sample_order = []
+            temp_sample_lines = defaultdict(list)
+            current_processing_sample = None
             for line in run_report_lines:
                  if line.startswith("--- Sample:"):
-                      if current_sample: # Add separator *before* next sample header if not the first
-                           f_report.write("\n=================================================\n\n")
-                      current_sample = line.split(":")[-1].strip().split(" ")[0] # Extract sample name
-                      f_report.write(f"{line}\n\n") # Write sample header (already has --- Sample: ... ---)
-                 elif current_sample: # Write details only if we are under a sample header
-                     # Write the status or link line (already formatted correctly)
-                     f_report.write(line + "\n")
+                      current_processing_sample = line.split(":")[-1].strip().split(" ")[0]
+                      if current_processing_sample not in sample_order:
+                           sample_order.append(current_processing_sample)
+                      temp_sample_lines[current_processing_sample].append(line) # Add header
+                      temp_sample_lines[current_processing_sample].append("") # Add blank line
+                 elif current_processing_sample:
+                      temp_sample_lines[current_processing_sample].append(line)
 
-                     # Check if this is the *last* status/link line for the current sample before potentially adding cluster info
-                     # We need to peek ahead or track state. A simpler way is to add cluster info *after* the loop.
-                     # Let's modify the logic: Store cluster info per sample and add it after all lines for that sample are printed.
+            # Now write report sample by sample
+            for sample in sample_order:
+                processed_samples_in_report.add(sample)
+                # Write the collected status/link lines first
+                f_report.write("\n".join(temp_sample_lines[sample]) + "\n")
 
-            # --- Add Cluster Info after processing all lines ---
-            cluster_output_lines = {} # sample -> cluster_line
-            for sample, details in final_cluster_details.items():
-                cluster_name = details["name"]
-                cluster_members_str = ", ".join(details["members"])
-                if sample in initial_sample_to_cluster and initial_sample_to_cluster[sample] == cluster_name:
-                    cluster_output_lines[sample] = f"{sample} already part of {cluster_name} -> {cluster_members_str}"
-                elif sample in initial_sample_to_cluster:
-                     cluster_output_lines[sample] = f"{sample} merged into {cluster_name} (previously {initial_sample_to_cluster[sample]}) -> {cluster_members_str}"
-                else: # Newly added to a cluster
-                     cluster_output_lines[sample] = f"{sample} added to {cluster_name} -> {cluster_members_str}"
+                # Determine cluster status based on events and final mapping
+                cluster_status_reported = False
+                if sample in report_events:
+                    # Prioritize reporting specific events like merges, additions, new formations
+                    merge_event = next((e for e in report_events[sample] if "caused merge" in e), None)
+                    added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
+                    formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
 
-            # --- Rewrite the report using stored lines and adding cluster info ---
-            f_report.seek(0) # Go back to the beginning of the file
-            f_report.truncate() # Clear the file content
-            f_report.write(f"Pipeline Run Report - {datetime.datetime.now()}\n\n") # Write header again
+                    final_cluster_name = final_sample_to_cluster_map.get(sample)
+                    if not final_cluster_name: # Should not happen if event occurred, but safety check
+                         f_report.write(f"\n{sample} involved in cluster event, but final cluster unknown.\n")
+                         cluster_status_reported = True
+                    else:
+                         members = sorted(list(current_clusters.get(final_cluster_name, set())))
+                         members_str = ", ".join(members)
 
-            current_sample = None
-            sample_lines_buffer = []
-            for line in run_report_lines:
-                if line.startswith("--- Sample:"):
-                    # If we were buffering lines for a previous sample, write them now
-                    if current_sample and sample_lines_buffer:
-                        f_report.write("\n".join(sample_lines_buffer) + "\n") # Write buffered lines
-                        # Add cluster info if available
-                        if current_sample in cluster_output_lines:
-                            f_report.write(f"\n{cluster_output_lines[current_sample]}\n")
-                        elif any("Links found: No" in buf_line for buf_line in sample_lines_buffer):
-                             f_report.write(f"\n{current_sample} has no links and is not part of any cluster.\n")
-                        # Add separator
-                        f_report.write("\n=================================================\n\n")
+                         if merge_event:
+                              # Extract the original clusters if possible (complex, using simpler message for now)
+                              # Example: "GP00092 involved in merge resulting in Cluster_1 -> GP00092, GP00093, ..."
+                              f_report.write(f"\n{sample} involved in merge resulting in {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                         elif added_event:
+                              # Example: "GP00092 added to cluster Cluster_1 -> GP00092, GP00093, ..."
+                              f_report.write(f"\n{sample} added to {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                         elif formed_event:
+                              # Example: "GP00092 formed new cluster Cluster_3 -> GP00092, GP00101"
+                              f_report.write(f"\n{sample} formed new {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                         # If only "linked within" events, treat as "already part of" below
 
-                    # Start buffering for the new sample
-                    current_sample = line.split(":")[-1].strip().split(" ")[0]
-                    sample_lines_buffer = [line, ""] # Start with header and a blank line
-                elif current_sample:
-                    # Add line to buffer for the current sample
-                    sample_lines_buffer.append(line)
+                # If no specific event reported, check if it's just part of a cluster
+                if not cluster_status_reported and sample in final_sample_to_cluster_map:
+                    cluster_name = final_sample_to_cluster_map[sample]
+                    members = sorted(list(current_clusters.get(cluster_name, set())))
+                    members_str = ", ".join(members)
+                    # Check if it was already in that cluster initially
+                    if sample in initial_sample_to_cluster and initial_sample_to_cluster[sample] == cluster_name:
+                         f_report.write(f"\n{sample} already part of {cluster_name} -> {members_str}\n")
+                         cluster_status_reported = True
+                    else:
+                         # This case might occur if a sample was part of a cluster that got merged *into* this one,
+                         # but the sample itself didn't trigger the merge link. Report as "part of".
+                         f_report.write(f"\n{sample} part of final {cluster_name} -> {members_str}\n")
+                         cluster_status_reported = True
 
-            # Write the last buffered sample
-            if current_sample and sample_lines_buffer:
-                f_report.write("\n".join(sample_lines_buffer) + "\n")
-                if current_sample in cluster_output_lines:
-                    f_report.write(f"\n{cluster_output_lines[current_sample]}\n")
-                elif any("Links found: No" in buf_line for buf_line in sample_lines_buffer):
-                     f_report.write(f"\n{current_sample} has no links and is not part of any cluster.\n")
-                f_report.write("\n=================================================\n") # Final separator
 
-            # Removed final cluster summary section to match desired format (comment remains indented)
+                # If still no cluster status reported, check for failure/no links based on buffered lines
+                if not cluster_status_reported:
+                     buffered_lines = "\n".join(temp_sample_lines[sample])
+                     if "Links found: No" in buffered_lines or "Status: Kmer Analysis SKIPPED" in buffered_lines or "FAILED" in buffered_lines:
+                          f_report.write(f"\n{sample} has no links and is not part of any cluster.\n")
+                          cluster_status_reported = True
+                     # else: # Sample processed but somehow didn't end up in a cluster or have an event?
+                     #      f_report.write(f"\n{sample} - final cluster status undetermined.\n")
+
+
+                # Add separator
+                f_report.write("\n=================================================\n\n")
+
+            # Add entries for any processed samples missed by the loop (e.g., failed very early)
+            all_processed_samples = set(sample_temp_dirs.keys()) # Get all samples attempted
+            missed_samples = all_processed_samples - processed_samples_in_report
+            for sample in sorted(list(missed_samples)):
+                 f_report.write(f"--- Sample: {sample} ---\n\n")
+                 # Try to find a status line for it in the original run_report_lines
+                 status_line = next((line for line in run_report_lines if sample in line and ("FAILED" in line or "SKIPPED" in line)), None)
+                 if status_line:
+                      f_report.write(status_line.strip() + "\n")
+                 else:
+                      f_report.write(f"Status: Processing details incomplete (check individual report: {reports_dir / f'{sample}_report.out'}).\n")
+                 f_report.write(f"\n{sample} has no links and is not part of any cluster.\n")
+                 f_report.write("\n=================================================\n\n")
+
+            # Remove final blank line added by loop
+            f_report.seek(f_report.tell() - 2)
+            f_report.truncate()
 
         # This block is now outside the 'with open' but inside the 'try'
         print(f"Run report saved to: {run_report_file}", file=sys.stderr)
@@ -752,7 +892,6 @@ def main():
 
     # --- Step 4: Emailing (Optional) ---
     print("\n--- Pipeline Finished ---", file=sys.stderr)
-
 
     print("Reports generated in:", reports_dir, file=sys.stderr)
 

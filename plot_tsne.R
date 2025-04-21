@@ -131,9 +131,10 @@ if (na_count > 0) {
 message("Extracting metadata (Sample Name, Size)...")
 metadata <- data.frame(SequenceName = unique_sequences, stringsAsFactors = FALSE) %>%
   mutate(
-    # Extract Sample Name (look for GP followed by digits, fallback to before first underscore)
-    SampleName = str_extract(SequenceName, "GP\\d+"),
-    SampleName = ifelse(is.na(SampleName), str_extract(SequenceName, "^[^_]+"), SampleName), # Fallback
+    # Extract Sample Name (look for GPxxxx or BL-xxxx pattern first)
+    SampleName = str_extract(SequenceName, "GP\\d+|BL-[A-Za-z0-9]+"),
+    # Fallback: If NA, try extracting content between first and last underscore (assuming number_name_number format)
+    SampleName = ifelse(is.na(SampleName), str_extract(SequenceName, "(?<=^\\d+_)[^_]+(?=_\\d+$)"), SampleName),
     # Extract Size (the number at the very end)
     SequenceSize_str = str_extract(SequenceName, "\\d+$"),
     SequenceSize = suppressWarnings(as.numeric(SequenceSize_str)) # Suppress warnings for NAs introduced by coercion
@@ -189,8 +190,17 @@ if (!is.null(tsne_results)) {
       mutate(
         SampleName = factor(SampleName), # Convert SampleName to factor
         # Calculate log size, handle size 0 or 1 appropriately (log(1)=0)
-        LogSize = log10(SequenceSize + 1) # Add 1 to avoid log(0) issues
+        LogSize = log2(SequenceSize + 1) # Add 1 to avoid log(0) issues
       )
+
+    # --- Debugging: Inspect plot_data ---
+    message("Structure of plot_data before plotting:")
+    print(str(plot_data))
+    message("First few rows of plot_data:")
+    print(head(plot_data))
+    message("Unique Sample Names (Factor Levels) being used:")
+    print(levels(plot_data$SampleName))
+    # --- End Debugging ---
 
     # Generate a color palette for all unique samples
     unique_sample_names <- levels(plot_data$SampleName)
@@ -259,19 +269,34 @@ if (!is.null(tsne_results)) {
 
     message("Found ", nrow(edge_data), " unique inter-sample edges with distance <= 10 to plot.")
 
+    # --- Calculate Dynamic Alpha for Edges ---
+    n_edges <- nrow(edge_data)
+    max_alpha <- 0.3
+    min_alpha <- 0.005
+    target_edges_for_max_alpha <- 25 # Number of edges where alpha is max_alpha
+    
+    # Calculate alpha based on inverse relationship, clamped between min/max
+    if (n_edges > 0) {
+      dynamic_alpha <- (target_edges_for_max_alpha / n_edges) * max_alpha
+      dynamic_alpha <- max(min_alpha, min(max_alpha, dynamic_alpha)) # Clamp between min and max
+    } else {
+      dynamic_alpha <- max_alpha # Default if no edges
+    }
+    message("Using dynamic alpha for edges: ", round(dynamic_alpha, 3))
+
     # --- Generate Plot ---
     message("Generating plot...")
     p <- ggplot(plot_data, aes(x = TSNE1, y = TSNE2, color = SampleName, size = LogSize)) + # Use SampleName directly
       # Add segments first so points are drawn on top
       geom_segment(data = edge_data, aes(x=x, y=y, xend=xend, yend=yend),
-                   color = "black", alpha = 0.005, linewidth = 0.1, inherit.aes = FALSE) + # Use linewidth instead of size
+                   color = "black", alpha = dynamic_alpha, linewidth = 0.1, inherit.aes = FALSE) + # Use dynamic alpha
       geom_point(alpha = 0.6) + # Slightly increase alpha for points
       scale_color_manual(
           name = "Sample", # Legend title for color
           values = color_map, # Use the generated color map for all samples
           labels = unique_sample_names # Ensure labels match the factor levels
           ) +
-      scale_size_continuous(name = "Log10(Sequence Size + 1)") + # Legend title for size
+      scale_size_continuous(name = "Log2") + # Legend title for size
       labs(
         #title = "t-SNE Visualization of Sequence Distances", # Title can be added if desired
         subtitle = paste("Edges connect sequences from different samples with SNP distance <= 10"), # Updated subtitle

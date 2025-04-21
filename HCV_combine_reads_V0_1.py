@@ -54,7 +54,7 @@ def main():
     parser.add_argument("working_dir", type=Path, help="Working directory containing input and for output subdirectories.")
     parser.add_argument("r1_file", type=Path, help="Path to the R1 FASTQ file.")
     parser.add_argument("tmp_dir", type=Path, help="Path to the shared temporary directory for this run.") # New argument
-    parser.add_argument("--ref_kmer_file", type=Path, default=None, help="Path to the reference k-mer file (default: <working_dir>/kmer_ref_counts.out).")
+    parser.add_argument("--ref_kmer_file", type=Path, default=None, help="Path to the reference k-mer file (default: <working_dir>/1b_kmer_ref_counts.out).")
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
     parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
     parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
     parser.add_argument("--min_final_reads", type=int, default=50, help="Minimum number of filtered reads required to PASS.")
     parser.add_argument("--keep_tmp", action='store_true', help="Keep temporary files.")
+    parser.add_argument("--keep_unmerged", action='store_true', help="Keep the unmerged R1 and R2 reads from bbmerge.")
 
     args = parser.parse_args()
 
@@ -87,7 +88,7 @@ def main():
     fasta_dir.mkdir(parents=True, exist_ok=True)
     kmers_dir.mkdir(parents=True, exist_ok=True)
 
-    ref_kmer_path = args.ref_kmer_file if args.ref_kmer_file else args.working_dir / "kmer_ref_counts.out"
+    ref_kmer_path = args.ref_kmer_file if args.ref_kmer_file else args.working_dir / "1b_kmer_ref_counts.out"
     if not ref_kmer_path.is_file():
         print(f"Error: Reference k-mer file not found: {ref_kmer_path}", file=sys.stderr)
         sys.exit(1)
@@ -157,6 +158,9 @@ def main():
     final_fasta_gz = fasta_dir / f"{prefix}.fasta.gz"
     # Final kmer path (after moving)
     final_kmer_output_gz = kmers_dir / f"{prefix}.kmers.gz"
+    unmerged_r1_fq_gz = combined_reads_dir / f"{prefix}.unmerged.1.fq.gz"
+    unmerged_r2_fq_gz = combined_reads_dir / f"{prefix}.unmerged.2.fq.gz"
+
 
     # --- Run Cutadapt ---
     # Original primers: -G GGATATGATGATGAACTGGT -g ATGTGCCAGCTGCCGTTGGTGT -g GGATATGATGATGAACTGGT -G ATGTGCCAGCTGCCGTTGGTGT
@@ -188,8 +192,15 @@ def main():
         f"in2={trimmed_r2}",
         f"out={merged_fq_gz}",
         f"ziplevel=6"
-        # stderr is captured for parsing
     ]
+    if args.keep_unmerged:
+        bbmerge_cmd.extend([
+            f"outu1={unmerged_r1_fq_gz}",
+            f"outu2={unmerged_r2_fq_gz}"
+        ])
+        print("BBmerge will keep unmerged reads.", file=sys.stderr)
+
+    # stderr is captured for parsing
     print("Running BBmerge...", file=sys.stderr)
     bbmerge_process = run_command(bbmerge_cmd, error_log_file=bbmerge_log) # BBmerge writes stats to stderr
 
