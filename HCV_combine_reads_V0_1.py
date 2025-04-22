@@ -53,11 +53,12 @@ def main():
     parser = argparse.ArgumentParser(description="Combine paired-end reads, filter based on k-mers, and generate k-mer counts.")
     parser.add_argument("working_dir", type=Path, help="Working directory containing input and for output subdirectories.")
     parser.add_argument("r1_file", type=Path, help="Path to the R1 FASTQ file.")
-    parser.add_argument("tmp_dir", type=Path, help="Path to the shared temporary directory for this run.") # New argument
-    parser.add_argument("--ref_kmer_file", type=Path, default=None, help="Path to the reference k-mer file (default: <working_dir>/1b_kmer_ref_counts.out).")
+    parser.add_argument("tmp_dir", type=Path, help="Path to the shared temporary directory for this run.")
+    parser.add_argument("--ref_kmer_file", type=Path, default=Path("/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/"),
+                        help="Path to the reference k-mer file (default: /Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/).")
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
     parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
-    parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
+    parser.add_argument("--min_overlap", type=int, default=100, help="Minimum overlap for bbmerge.")
     parser.add_argument("--min_count", type=int, default=15, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
@@ -74,12 +75,9 @@ def main():
     if not args.r1_file.is_file():
         print(f"Error: R1 file not found: {args.r1_file}", file=sys.stderr)
         sys.exit(1)
-
-    # Ensure the provided tmp_dir exists (created by master script)
     if not args.tmp_dir.is_dir():
         print(f"Error: Temporary directory not found: {args.tmp_dir}", file=sys.stderr)
         sys.exit(1)
-    # args.output_dir.mkdir(parents=True, exist_ok=True) # No longer create output_dir
 
     combined_reads_dir = args.working_dir / "combined_reads"
     fasta_dir = args.working_dir / "HCV_fasta"
@@ -88,26 +86,29 @@ def main():
     fasta_dir.mkdir(parents=True, exist_ok=True)
     kmers_dir.mkdir(parents=True, exist_ok=True)
 
-    ref_kmer_path = args.ref_kmer_file if args.ref_kmer_file else args.working_dir / "1b_kmer_ref_counts.out"
-    if not ref_kmer_path.is_file():
-        print(f"Error: Reference k-mer file not found: {ref_kmer_path}", file=sys.stderr)
+    # Validate the reference k-mer file/directory using hardcoded values
+    ref_kmer_dir = Path("/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/")
+    ref_file1 = ref_kmer_dir / "1a_kmer_ref_counts.out"
+    ref_file2 = ref_kmer_dir / "1b_kmer_ref_counts.out"
+    if not (ref_file1.is_file() and ref_file2.is_file()):
+        print(f"Error: Expected reference k-mer files not found in {ref_kmer_dir}", file=sys.stderr)
         sys.exit(1)
+    ref_files = [ref_file1, ref_file2]
 
-    # --- Load Reference K-mers ---
-    
     kmer_check = set()
     try:
-        with open(ref_kmer_path, 'r') as f:
-            for line in f:
-                if not line.startswith('>'):
+        for ref_file in ref_files:
+            with open(ref_file, 'r') as f:
+                for line in f:
+                    if line.startswith('>'):
+                        continue
                     kmer = line.strip().upper()
                     if kmer:
                         kmer_check.add(kmer)
     except IOError as e:
-        print(f"Error reading reference k-mer file {ref_kmer_path}: {e}", file=sys.stderr)
+        print(f"Error reading reference k-mer file(s): {e}", file=sys.stderr)
         sys.exit(1)
     print(f"Loaded {len(kmer_check)} reference k-mers.", file=sys.stderr)
-
 
     # --- Determine R2 filename and prefix ---
     r1_filename = args.r1_file.name
@@ -276,8 +277,8 @@ def main():
     tag = 1
 
     # Sort by count descending (optional, matches Perl script)
+    #sorted_seqs = sorted(seq_counts.items(), key=lambda item, count: item[1], reverse=True)
     sorted_seqs = sorted(seq_counts.items(), key=lambda item: item[1], reverse=True)
-
     for seq, count in sorted_seqs:
         if count >= args.min_count:
             match_count = 0
