@@ -132,9 +132,11 @@ message("Extracting metadata (Sample Name, Size)...")
 metadata <- data.frame(SequenceName = unique_sequences, stringsAsFactors = FALSE) %>%
   mutate(
     # Extract Sample Name (look for GPxxxx or BL-xxxx pattern first)
-    SampleName = str_extract(SequenceName, "GP\\d+|BL-[A-Za-z0-9]+"),
-    # Fallback: If NA, try extracting content between first and last underscore (assuming number_name_number format)
-    SampleName = ifelse(is.na(SampleName), str_extract(SequenceName, "(?<=^\\d+_)[^_]+(?=_\\d+$)"), SampleName),
+    SampleName_Primary = str_extract(SequenceName, "GP\\d+|BL-[A-Za-z0-9]+"),
+    # Fallback: Use capturing group for format like number_NAME_number
+    SampleName_Fallback = str_match(SequenceName, "^\\d+_(.*?)_\\d+$")[, 2], # Extract group 1
+    # Combine primary and fallback extraction
+    SampleName = ifelse(!is.na(SampleName_Primary), SampleName_Primary, SampleName_Fallback),
     # Extract Size (the number at the very end)
     SequenceSize_str = str_extract(SequenceName, "\\d+$"),
     SequenceSize = suppressWarnings(as.numeric(SequenceSize_str)) # Suppress warnings for NAs introduced by coercion
@@ -274,7 +276,7 @@ if (!is.null(tsne_results)) {
     max_alpha <- 0.3
     min_alpha <- 0.005
     target_edges_for_max_alpha <- 25 # Number of edges where alpha is max_alpha
-    
+
     # Calculate alpha based on inverse relationship, clamped between min/max
     if (n_edges > 0) {
       dynamic_alpha <- (target_edges_for_max_alpha / n_edges) * max_alpha

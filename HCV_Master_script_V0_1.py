@@ -304,7 +304,7 @@ def main():
                                 print(f"Warning: Could not parse kmer distance line: {line}", file=sys.stderr)
                                 f_out.write(f"\nWarning: Could not parse kmer distance line: {line}\n")
 
-                f_out.write(f"\n--- SNP Distance Check (Threshold <= 10) ---\n")
+                f_out.write(f"\n--- SNP Distance Check (Threshold <= 9) ---\n")
                 if not transmission_candidates:
                     f_out.write(f"No potential transmission candidates found based on k-mer overlap >= {args.kmer_overlap_threshold}.\n")
                     run_report_lines.append(f"  Links found: No (No k-mer candidates)")
@@ -397,7 +397,7 @@ def main():
                             inter_pair_count = 0
                             le_10_count = 0
                             if snp_dist_ret == 0 and pair_snp_list_file.is_file() and pair_snp_list_file.stat().st_size > 0:
-                                print(f"Checking SNP distances in {pair_snp_list_file.name} (3-column format) for link <= 10...", file=sys.stderr)
+                                print(f"Checking SNP distances in {pair_snp_list_file.name} (3-column format) for link <= 9...", file=sys.stderr)
                                 try:
                                     with open(pair_snp_list_file, "r") as f_pairs:
                                         header = f_pairs.readline()
@@ -414,17 +414,17 @@ def main():
                                                 try:
                                                     dist = int(dist_str)
                                                     min_snp_dist_for_pair = min(min_snp_dist_for_pair, dist)
-                                                    if dist <= 10:
+                                                    if dist <= 9:
                                                         le_10_count += 1
-                                                        # Record the link and update minimum distance regardless of whether it's the *first* link found <= 10
-                                                        # This ensures we capture the true minimum if multiple pairs are <= 10
-                                                        # print(f"Found SNP link candidate (dist={dist} <= 10) between {sample_prefix} and {subject_prefix}", file=sys.stderr)
+                                                        # Record the link and update minimum distance regardless of whether it's the *first* link found <=9
+                                                        # This ensures we capture the true minimum if multiple pairs are <= 9
+                                                        # print(f"Found SNP link candidate (dist={dist} <= 9) between {sample_prefix} and {subject_prefix}", file=sys.stderr)
                                                         link_tuple = tuple(sorted((sample_prefix, subject_prefix)))
                                                         # Add to *both* sets: all_linked_pairs for potential downstream use,
                                                         # and newly_linked_pairs_this_run for the stateful clustering logic
                                                         all_linked_pairs.add(link_tuple)
                                                         newly_linked_pairs_this_run.add(link_tuple) # Track new links
-                                                        snp_link_found = True # Mark that *a* link <= 10 was found for this pair
+                                                        snp_link_found = True # Mark that *a* link <= 9 was found for this pair
                                                         # We already update min_snp_dist_for_pair in line 413 (corrected line number)
                                                 except ValueError:
                                                     print(f"Warning: Could not parse distance '{dist_str}' as integer in {pair_snp_list_file.name} line {line_num}", file=sys.stderr)
@@ -435,9 +435,9 @@ def main():
                             min_dist_report = str(min_snp_dist_for_pair) if min_snp_dist_for_pair != float('inf') else "N/A"
                             percentage = (le_10_count / inter_pair_count * 100) if inter_pair_count > 0 else 0
                             f_out.write(f"Minimum SNP distance found between {sample_prefix} and {subject_prefix}: {min_dist_report}\n")
-                            f_out.write(f"Percentage of pairs <= 10 SNPs: {percentage:.2f}% ({le_10_count}/{inter_pair_count})\n")
+                            f_out.write(f"Percentage of pairs <= 9 SNPs: {percentage:.2f}% ({le_10_count}/{inter_pair_count})\n")
                             if snp_link_found:
-                                f_out.write(f"** Link confirmed by minimum distance ({min_snp_dist_for_pair} <= 10 SNPs) **\n")
+                                f_out.write(f"** Link confirmed by minimum distance ({min_snp_dist_for_pair} <= 9 SNPs) **\n")
                                 # Store the linked sample AND the minimum distance found for this specific pair comparison
                                 # Check if this subject is already linked, update distance if lower
                                 found_existing = False
@@ -461,7 +461,7 @@ def main():
                     if not transmission_candidates:
                          run_report_lines.append(f"  Links found: No (No k-mer candidates)")
                     elif not found_any_snp_link_for_sample:
-                         run_report_lines.append(f"  Links found: No (SNP distance > 10 or errors)")
+                         run_report_lines.append(f"  Links found: No (SNP distance > 9 or errors)")
                     else:
                          link_summaries = []
                          # Use the updated sample_link_info which now stores (linked_sample, min_dist) tuples
@@ -701,8 +701,10 @@ def main():
 
                 # 3. Generate distance matrix using snp-dists
                 cluster_pmatrix_file = cluster_analysis_dir / f"{cluster_name}_ident.pmatrix" # Use specific name
+                cluster_dmatrix_file = cluster_analysis_dir / f"{cluster_name}_ident.dmatrix" # Use specific name
                 # Use absolute paths in command string for robustness, use -m flag
                 snp_dists_cmd_str = f"{args.snp_dists_path} -m {cluster_aligned_fasta.resolve()} > {cluster_pmatrix_file.resolve()}"
+                snp_dists_cmd_str_dists = f"{args.snp_dists_path} -b {cluster_aligned_fasta.resolve()} > {cluster_dmatrix_file.resolve()}"
                 print(f"Running snp-dists for {cluster_name}: {snp_dists_cmd_str}", file=sys.stderr)
                 snp_dist_ret = 1
                 try:
@@ -710,6 +712,7 @@ def main():
                     print(f"Running snp-dists command for {cluster_name}: {snp_dists_cmd_str}", file=sys.stderr)
 
                     proc_snp = subprocess.run(snp_dists_cmd_str, shell=True, cwd=cluster_analysis_dir, text=True, capture_output=True, check=False)
+                    subprocess.run(snp_dists_cmd_str_dists, shell=True, cwd=cluster_analysis_dir, text=True, capture_output=False, check=False)
                     snp_dist_ret = proc_snp.returncode
 
                     if snp_dist_ret != 0:
@@ -732,6 +735,7 @@ def main():
 
                 print(f"Running R script for {cluster_name} plot...", file=sys.stderr)
                 # Log R command to stderr
+                # Revert to original positional argument call
                 r_cmd_list = [args.rscript_path, str(external_r_script_path.resolve()), str(cluster_pmatrix_file.resolve())]
                 print(f"Running R command for {cluster_name}: {' '.join(r_cmd_list)}", file=sys.stderr)
 
@@ -745,11 +749,14 @@ def main():
                         print(f"Error: R script failed for {cluster_name} plot (exit code {r_ret}).", file=sys.stderr)
                         if r_process.stderr: print(f"R Stderr:\n{r_process.stderr}", file=sys.stderr)
                         if r_process.stdout: print(f"R Stdout:\n{r_process.stdout}", file=sys.stderr) # Print stdout too on error
+                    else:
+                         if r_process.stdout: print(f"R script stdout for {cluster_name}:\n{r_process.stdout}", file=sys.stderr) # Print stdout on success too
                 except Exception as r_e:
                      print(f"Error executing R script for {cluster_name}: {r_e}", file=sys.stderr)
+                     r_ret = 1 # Ensure failure state
 
 
-                # 5. Move and rename plot
+                # 5. Move and rename plot (original logic)
                 # Construct expected PDF name based on the pmatrix filename used as input for R
                 temp_pdf_output_name = cluster_pmatrix_file.stem + "_tsne.pdf" # e.g., Cluster_1_ident_tsne.pdf
                 temp_pdf_output_path = cluster_analysis_dir / temp_pdf_output_name # PDF is created in the analysis dir
@@ -763,8 +770,9 @@ def main():
                         files_to_send.append(final_pdf_path) # Add plot to email list
                     except Exception as e:
                         print(f"Error moving cluster plot {temp_pdf_output_path} to {final_pdf_path}: {e}", file=sys.stderr)
-                elif r_ret != 0:
-                    print(f"Error: R script failed for {cluster_name} plot (exit code {r_ret}).", file=sys.stderr)
+                elif r_ret == 0 and not temp_pdf_output_path.is_file():
+                     print(f"Error: R script finished successfully for {cluster_name} but output PDF not found at expected location: {temp_pdf_output_path}", file=sys.stderr)
+                # Error message for r_ret != 0 already printed above
                 else: # r_ret == 0 but file doesn't exist
                      print(f"Error: R script finished for {cluster_name} but output PDF not found: {temp_pdf_output_path}", file=sys.stderr)
 
