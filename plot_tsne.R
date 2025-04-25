@@ -30,13 +30,18 @@ message("Libraries loaded successfully.")
 args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) == 0) {
-  stop("Usage: Rscript plot_tsne.R <input_pmatrix_file>", call. = FALSE)
+  stop("Usage: Rscript plot_tsne.R <input_pmatrix_file> [output_pdf_file]", call. = FALSE)
 } else {
   input_file <- args[1]
+  
+  # Check if output file is provided as an argument
+  if (length(args) >= 2) {
+    output_plot <- args[2]
+  } else {
+    # Generate output filename based on input if not explicitly provided
+    output_plot <- sub("^(.*?)(\\.[^.]+)?$", "\\1_tsne.pdf", basename(input_file))
+  }
 }
-
-# Generate output filename based on input
-output_plot <- sub("^(.*?)(\\.[^.]+)?$", "\\1_tsne.pdf", basename(input_file)) # Output as PDF
 
 perplexity_value <- 15               # t-SNE perplexity (adjust based on data size, typically 5-50)
 iterations <- 1000                   # t-SNE iterations

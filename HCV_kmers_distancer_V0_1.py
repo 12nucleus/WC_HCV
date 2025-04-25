@@ -32,6 +32,7 @@ def main():
     parser = argparse.ArgumentParser(description="Calculate k-mer overlap between a query sample and other samples.")
     parser.add_argument("working_dir", type=Path, help="Working directory containing the HCV_Kmers subdirectory.")
     parser.add_argument("query_prefix", type=str, help="Prefix of the query k-mer file (e.g., 'sampleA' for 'sampleA.kmers.gz').")
+    parser.add_argument("tmp_dir", type=Path, help="Tmp subdirectory.")
     parser.add_argument("--kmer_dir_name", type=str, default="HCV_Kmers", help="Name of the subdirectory containing kmer files.")
     parser.add_argument("--overlap_threshold", type=float, default=0.05, help="Threshold for marking significant overlap.")
 
@@ -40,7 +41,7 @@ def main():
     kmer_dir = args.working_dir / args.kmer_dir_name
     if not kmer_dir.is_dir():
         print(f"Error: K-mer directory not found: {kmer_dir}", file=sys.stderr)
-        sys.exit(1)
+        #sys.exit(1)
 
     query_kmer_file = kmer_dir / f"{args.query_prefix}.kmers.gz"
 
@@ -56,7 +57,7 @@ def main():
     except Exception as e:
         print(f"Error loading query k-mers: {e}", file=sys.stderr)
         sys.exit(1)
-
+        
 
     # --- Print Header ---
     print("S1\tS2\tKmer Overlaps\tTotal S1\tTotal S2\tRatio")
@@ -66,6 +67,7 @@ def main():
     if not subject_files:
         print(f"Warning: No '.kmers.gz' files found in {kmer_dir}", file=sys.stderr)
 
+    results = []
     for subject_file in subject_files:
         # Extract prefix (robustly handles potential dots in prefix)
         subject_prefix = subject_file.name.replace(".kmers.gz", "")
@@ -95,6 +97,7 @@ def main():
 
                 marker = "*" if ratio >= args.overlap_threshold else ""
                 print(f"{args.query_prefix}\t{subject_prefix}\t{overlap_count}\t{total_query}\t{total_subject}\t{ratio:.5f}{marker}")
+                results.append((args.query_prefix, subject_prefix, overlap_count, total_query, total_subject, ratio))
 
         except FileNotFoundError:
             # Should not happen if glob worked, but good practice
@@ -103,6 +106,14 @@ def main():
         except Exception as e:
             print(f"Warning: Error processing subject file {subject_file}: {e}", file=sys.stderr)
             continue # Skip this subject file on error
+
+    # --- Write Results to File ---
+    output_file = Path(args.tmp_dir) / f"{args.query_prefix}_kmer_links.tsv"
+    #print(f"Writing results to: {output_file}")
+    with open(output_file, "w") as f_out:
+        f_out.write("S1\tS2\tKmer Overlaps\tTotal S1\tTotal S2\tRatio\n")
+        for s1, s2, overlap, total1, total2, ratio in results:
+            f_out.write(f"{s1}\t{s2}\t{overlap}\t{total1}\t{total2}\t{ratio:.5f}\n")
 
     # --- Print Footer ---
     print(f"* indicated Kmer overlap ratio >= {args.overlap_threshold}")

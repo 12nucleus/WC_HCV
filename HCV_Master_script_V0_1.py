@@ -12,6 +12,7 @@ import datetime
 from Bio import SeqIO
 from collections import defaultdict, deque
 import gzip
+import csv # Added for parsing snp-dists output
 import numpy as np
 
 def run_script(script_path: Path, args_list: list, capture_stdout=True, cwd=None) -> tuple[int, str | None]:
@@ -62,6 +63,26 @@ def find_clusters(linked_pairs: set) -> list[set]:
             if current_cluster:
                 clusters.append(current_cluster)
     return clusters
+
+def get_base_sample_name(full_seq_name: str) -> str | None:
+    """Extracts the base sample name (e.g., GP00096) from a full sequence name (e.g., 5_GP00096_188)."""
+    parts = full_seq_name.split('_')
+    if len(parts) >= 2:
+        # Assume the base name is the second part, potentially joining if base name itself has underscores
+        # A safer assumption might be needed if names like 'Sample_A_1' occur.
+        # For now, assume simple structure like 'Num_BaseName_Num' or 'BaseName'
+        if parts[0].isdigit() and parts[-1].isdigit() and len(parts) >= 3:
+             return "_".join(parts[1:-1]) # Join middle parts if base name has underscores
+        elif len(parts) == 1:
+             return parts[0] # Handle case where header is just the base name
+        # Add more robust parsing if needed based on actual header formats
+        # Fallback: return the part after the first underscore if it looks like a GP id
+        if len(parts) > 1 and parts[1].startswith("GP"):
+             return parts[1]
+    # Fallback or if parsing fails
+    print(f"Warning: Could not reliably parse base name from '{full_seq_name}'. Using full name.", file=sys.stderr)
+    return full_seq_name # Return full name if parsing fails
+
 
 def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, set[str]], dict[str, str], int, set[tuple[str, str]]]:
     """
@@ -156,9 +177,9 @@ def main():
     parser.add_argument("--r1_pattern", type=str, default="*_R1_001.fastq.gz", help="Glob pattern for R1 files.")
     parser.add_argument("--kmer_overlap_threshold", type=float, default=0.05, help="Threshold for k-mer overlap ratio to trigger transmission test.")
     parser.add_argument("--snp_dists_path", type=str, default="snp-dists", help="Path to the snp-dists executable.")
+    parser.add_argument("--mafft_path", type=str, default="mafft", help="Path to the mafft executable.") # Added MAFFT path
     parser.add_argument("--rscript_path", type=str, default="Rscript", help="Path to the Rscript executable.")
-    parser.add_argument("--hcv_kmer_threshold", type=float, default=0.1,
-                        help="Minimum fraction of matching kmers for a sample to be considered HCV")
+    parser.add_argument("--hcv_kmer_threshold", type=float, default=0.1, help="Minimum fraction of matching kmers for a sample to be considered HCV")
     args = parser.parse_args()
 
     # --- Validate paths and setup directories ---
@@ -194,12 +215,19 @@ def main():
     run_report_lines = [] # Store lines for the final run report
 
     # --- Load Existing Clusters ---
-    cluster_file_path = reports_dir / "clusters.txt"
-    # Load existing cluster state
+    print("\n--- Loading Existing Clusters ---", file=sys.stderr)
+    cluster_file_path = reports_dir / "clusters.txt" # Define the path to the cluster file
     existing_clusters_map, initial_sample_to_cluster, max_cluster_num, existing_links = load_existing_clusters(cluster_file_path)
+
+    # Initialize current state for clustering
+    current_clusters = existing_clusters_map.copy()  # {cluster_name: {samples}}
+    current_sample_to_cluster = initial_sample_to_cluster.copy()  # {sample: cluster_name}
+    next_cluster_id_counter = max_cluster_num + 1
+
     # Combine existing links with newly found links for downstream processing if needed, but clustering logic below uses only *new* links to modify state
     all_linked_pairs = existing_links.copy() # Start with links implied by existing clusters
-    newly_linked_pairs_this_run = set() # Track only links found *in this specific run*
+    potential_kmer_links = set() # Track potential links found by kmer analysis in this run
+    newly_linked_pairs_this_run = set() # Track SNP-confirmed links found *in this specific run* for clustering
 
     # --- Step 1: Combine Reads ---
     print("--- Running Step 1: Combine Reads ---", file=sys.stderr)
@@ -289,19 +317,20 @@ def main():
         print(f"Analyzing {len(processed_samples)} samples: {', '.join(processed_samples)}", file=sys.stderr)
 
     sample_link_info = defaultdict(list) # Store linked sample and min distance for the run report: {sample: [(linked_sample, min_dist), ...]}
-
+    
     for sample_prefix in processed_samples:
         print(f"\nAnalyzing k-mers for sample: {sample_prefix}", file=sys.stderr)
         report_file = reports_dir / f"{sample_prefix}_report.out"
         kmer_file = kmer_dir / f"{sample_prefix}.kmers.gz"
         fasta_file = fasta_dir / f"{sample_prefix}.fasta.gz"
         temp_run_dir = sample_temp_dirs.get(sample_prefix)
-
+        
         if not temp_run_dir:
              print(f"Error: Could not find temporary directory for sample {sample_prefix}. Skipping.", file=sys.stderr)
              run_report_lines.append(f"  Status: SKIPPED (Missing temp dir)")
+             #sys.exit()
              continue
-
+        
         try:
             with open(report_file, 'a') as f_out:
                 f_out.write("\n--- HCV Reference Kmer Screening ---\n")
@@ -310,15 +339,10 @@ def main():
                     is_hcv, virus_type, overlap1a, overlap1b = screen_sample_hcv(kmer_file, ref_dir, args.hcv_kmer_threshold)
                     f_out.write(f"Overlap with HCV 1a: {overlap1a*100:.2f}%\n")
                     f_out.write(f"Overlap with HCV 1b: {overlap1b*100:.2f}%\n")
-                    #if not is_hcv:
-                    #    f_out.write("Sample does not appear to be HCV based on reference kmer screening. Skipping further analysis.\n")
-                    #    run_report_lines.append(f"{sample_prefix}: Not HCV based on kmer screening")
-                    #    continue  # Skip to next sample
-                    #else:
-                    #    f_out.write(f"Sample determined to be HCV type {virus_type} based on reference kmer screening.\n")
                 except Exception as e:
                     f_out.write(f"ERROR during HCV screening: {e}\n")
                     run_report_lines.append(f"{sample_prefix}: HCV screening failed with error: {e}")
+                    #sys.exit()
                     continue
                 f_out.write("--- End HCV Reference Kmer Screening ---\n")
 
@@ -327,154 +351,60 @@ def main():
                     f_out.write(f"ERROR: Kmer file not found: {kmer_file}\nSkipping distance analysis.\n")
                     print(f"Warning: Kmer file not found for {sample_prefix}, skipping distance analysis.", file=sys.stderr)
                     run_report_lines.append(f"  Status: Kmer Analysis SKIPPED (No kmer file)")
+                    #sys.exit()
                     continue
 
-                distancer_args = [str(args.base_dir), sample_prefix, f"--overlap_threshold={args.kmer_overlap_threshold}"]
+                distancer_args = [str(args.base_dir), sample_prefix, str(temp_run_dir),  f"--overlap_threshold={args.kmer_overlap_threshold}"]
+                print (f"Distancer arguments: {distancer_args}")
+
                 return_code, stdout = run_script(distancer_script_path, distancer_args, capture_stdout=True)
 
                 if return_code != 0 or not stdout:
                     f_out.write(f"ERROR: Kmer distancer script failed with exit code {return_code}.\n")
                     print(f"ERROR: Kmer distancer failed for {sample_prefix}.", file=sys.stderr)
                     run_report_lines.append(f"  Status: Kmer Analysis FAILED (Code: {return_code})")
+                    #sys.exit()
                     continue
-
                 f_out.write(stdout)
                 f_out.write("\n--- End Kmer Distance Analysis ---\n")
 
-                transmission_candidates = []
-                potential_links = 0
-                lines = stdout.strip().split('\n')
-                if len(lines) > 1:
-                    for line in lines[1:-1]:
-                        parts = line.strip().split('\t')
-                        if len(parts) == 6:
-                            try:
-                                ratio = float(parts[5].rstrip('*'))
-                                if ratio >= args.kmer_overlap_threshold:
-                                    potential_links += 1
-                                    transmission_candidates.append(parts[1])
-                            except (ValueError, IndexError):
-                                print(f"Warning: Could not parse kmer distance line: {line}", file=sys.stderr)
-                                f_out.write(f"\nWarning: Could not parse kmer distance line: {line}\n")
+                # Parse kmer distancer output to identify linked samples
+                distancer_output_file = temp_run_dir / f"{sample_prefix}_kmer_links.tsv"
+                linked_samples = set()
 
-                f_out.write(f"\n--- Combined SNP Distance Check (Threshold <= 9) ---\n")
-                if not transmission_candidates:
-                    f_out.write(f"No potential transmission candidates found based on k-mer overlap >= {args.kmer_overlap_threshold}.\n")
-                    run_report_lines.append(f"  Links found: No (No k-mer candidates)")
-                else:
-                    # Build a list of FASTA files: current sample plus all subject candidates
-                    fasta_list = [fasta_file]
-                    missing_files = False
-                    for subject_prefix in transmission_candidates:
-                        subject_fasta_file = fasta_dir / f"{subject_prefix}.fasta.gz"
-                        if subject_fasta_file.is_file():
-                            fasta_list.append(subject_fasta_file)
-                        else:
-                            f_out.write(f"WARNING: Subject FASTA file not found: {subject_fasta_file}. Skipping this candidate.\n")
-                    
-                    if len(fasta_list) < 2:
-                        f_out.write("Not enough FASTA files available for a combined SNP check.\n")
-                        run_report_lines.append("  Links found: SKIPPED (Not enough samples for SNP check)")
-                    else:
-                        # Combine all chosen FASTA files into one
-                        combined_fasta = temp_run_dir / f"combined_{sample_prefix}_all.fasta"
-                        with open(combined_fasta, "wb") as f_cat:
-                            for f_gz in fasta_list:
-                                with gzip.open(f_gz, "rb") as f_in:
-                                    shutil.copyfileobj(f_in, f_cat)
-                        f_out.write(f"Combined FASTA created: {combined_fasta}\n")
-                        
-                        # Run MAFFT (via docker) on the combined FASTA
-                        combined_aligned_fasta = temp_run_dir / f"combined_{sample_prefix}_all_aligned.fasta"
-                        mafft_docker_cmd = [
-                            "docker", "run", "--rm", "-v", f"{temp_run_dir.resolve()}:/data",
-                            "pegi3s/mafft", "mafft",
-                            "--adjustdirection", "--auto", "--quiet", "--thread", "1", "--reorder",
-                            f"/data/{combined_fasta.name}"
-                        ]
-                        try:
-                            with open(combined_aligned_fasta, 'w') as f_out_aln:
-                                proc_mafft = subprocess.run(
-                                    mafft_docker_cmd,
-                                    cwd=temp_run_dir,
-                                    text=True,
-                                    capture_output=True,
-                                    check=True
-                                )
-                                f_out_aln.write(proc_mafft.stdout)
-                            f_out.write(f"MAFFT alignment completed: {combined_aligned_fasta}\n")
-                        except Exception as e:
-                            f_out.write(f"ERROR: MAFFT alignment failed for combined samples: {e}\n")
-                            run_report_lines.append(f"  Links found: FAILED (MAFFT alignment error)")
-                            continue
-
-                        # Run snp-dists on the aligned FASTA
-                        combined_snp_output = temp_run_dir / f"snp_distances_{sample_prefix}_combined.tsv"
-                        snp_dists_cmd_str = f"{args.snp_dists_path} -m {combined_aligned_fasta.name} > {combined_snp_output.name}"
-                        try:
-                            proc_snp = subprocess.run(
-                                snp_dists_cmd_str,
-                                shell=True,
-                                cwd=temp_run_dir,
-                                text=True,
-                                capture_output=True,
-                                check=True
-                            )
-                            f_out.write(f"snp-dists executed successfully. Output file: {combined_snp_output}\n")
-                        except Exception as e:
-                            f_out.write(f"ERROR: snp-dists failed for combined samples: {e}\n")
-                            run_report_lines.append("  Links found: FAILED (snp-dists error)")
-                            continue
-
-                        # Parse the SNP distance output (three column format: sample1 sample2 distance)
-                        links = []
-                        try:
-                            with open(combined_snp_output, "r") as f_snp:
-                                for line in f_snp:
-                                    parts = line.strip().split()
-                                    if len(parts) != 3:
-                                        continue  # Skip malformed lines
-                                    sample1, sample2, snp_val = parts
-                                    try:
-                                        distance = int(snp_val)
-                                        if sample1 != sample2 and distance <= 9:
-                                            links.append((sample1, sample2, distance))
-                                    except ValueError:
-                                        f_out.write(f"Warning: Could not parse SNP distance value: {snp_val}\n")
-                        except Exception as e:
-                            f_out.write(f"ERROR parsing snp-dists output: {e}\n")
-                        
-                        # Write SNP links to the sample report and add summary to run_report_lines
-                        if links:
-                            f_out.write(f"Found {len(links)} SNP link(s) (≤9 SNP differences):\n")
-
-                            # Extract sample names from sequence IDs (e.g. 1_GP00098_8049 -> GP00098)
-                            def extract_sample_name(seq_id):
-                                # Assumes format: <number>_<sample>_<number>
-                                parts = seq_id.split('_')
-                                if len(parts) >= 2:
-                                    return parts[1]
-                                return seq_id
-
-                            linked_samples = set()
-                            for sample1, sample2, distance in links:
-                                # If either sample1 or sample2 is the analyzed sample, add the other sample's name
-                                s1 = extract_sample_name(sample1)
-                                s2 = extract_sample_name(sample2)
-                                if s1 == sample_prefix and s2 != sample_prefix:
-                                    linked_samples.add(s2)
-                                elif s2 == sample_prefix and s1 != sample_prefix:
-                                    linked_samples.add(s1)
-
-                            if linked_samples:
-                                f_out.write(f"Samples with ≤9 SNPs from {sample_prefix}: {', '.join(sorted(linked_samples))}\n")
-                                run_report_lines.append(f"{sample_prefix} clusters with: {', '.join(sorted(linked_samples))}")
-                            else:
-                                f_out.write(f"No samples with ≤9 SNPs from {sample_prefix}.\n")
-                                run_report_lines.append(f"{sample_prefix} has no SNP links ≤9")
-                        else:
-                            f_out.write("No SNP links (≤9 differences) found among combined samples.\n")
-                            run_report_lines.append("No SNP links (≤9 differences)")
+                try:
+                    with open(distancer_output_file, "r") as f_dist:
+                        for line in f_dist:
+                            if line.startswith("S1"):  # Skip the header line
+                                continue
+                            parts = line.strip().split()
+                            if len(parts) == 6:  # Ensure the line has the expected format
+                                sample1, sample2, overlap, total1, total2, ratio = parts
+                                if float(ratio) >= args.kmer_overlap_threshold:
+                                    # Add the newly found link to the set for this run's clustering update
+                                    # Ensure consistent order by sorting the pair
+                                    potential_link_pair = tuple(sorted((sample1, sample2)))
+                                    potential_kmer_links.add(potential_link_pair) # Store as potential link
+                                    # Add linked samples to the local set for reporting (optional, but was here)
+                                    if sample1 == sample_prefix:
+                                        linked_samples.add(sample2)
+                                    elif sample2 == sample_prefix:
+                                        linked_samples.add(sample1)
+                except FileNotFoundError:
+                    print(f"Warning: Kmer distancer output not found for {sample_prefix}. Skipping SNP confirmation for this sample.", file=sys.stderr)
+                    run_report_lines.append(f"  Status: SKIPPED Kmer Link Parsing (File Not Found: {distancer_output_file})")
+                    continue # Continue to the next sample
+                except Exception as e:
+                    print(f"Error parsing kmer distancer output for {sample_prefix}: {e}. Skipping SNP confirmation for this sample.", file=sys.stderr)
+                    run_report_lines.append(f"  Status: FAILED Kmer Link Parsing (Error: {e})")
+                    continue # Continue to the next sample
+                # Report potential links found (moved reporting logic slightly)
+                # Find partners linked *to this specific sample* in the potential links found so far
+                partners_for_this_sample = {s for pair in potential_kmer_links for s in pair if s != sample_prefix and sample_prefix in pair}
+                if partners_for_this_sample:
+                     print(f"Potential kmer links involving {sample_prefix} found: {', '.join(sorted(list(partners_for_this_sample)))}", file=sys.stderr)
+                # Note: The immediate clustering logic based on k-mers has been removed.
+                # SNP confirmation will happen after all samples are processed.
 
         except Exception as e:
             print(f"Error during Step 2 (kmer/SNP check) for {sample_prefix}: {e}", file=sys.stderr)
@@ -492,7 +422,218 @@ def main():
                 print(f"Keeping temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
 
 
+
+
+    # --- Step 2.5: SNP Distance Confirmation via Group Alignment ---
+    print("\n--- Running Step 2.5: SNP Distance Confirmation via Group Alignment ---", file=sys.stderr)
+    newly_linked_pairs_this_run.clear() # Ensure it's empty before populating
+    snp_confirmed_links_count = 0
+    # Store generated distance matrices for potential reuse in plotting
+    # Key: frozenset of samples in the group, Value: Path to distance matrix
+    generated_distance_matrices = {}
+    # We will use the temp directory of one of the samples within the group
+
+    try:
+        if not potential_kmer_links:
+            print("No potential k-mer links found to confirm.", file=sys.stderr)
+        else:
+            # Find connected components (potential clusters) based on k-mer links
+            potential_clusters = find_clusters(potential_kmer_links)
+            print(f"Found {len(potential_clusters)} potential clusters based on k-mer links.", file=sys.stderr)
+
+            for i, group_samples_set in enumerate(potential_clusters):
+                group_samples = sorted(list(group_samples_set)) # Consistent ordering
+                group_key = frozenset(group_samples) # Use frozenset as dict key
+                group_name = f"potential_group_{i+1}"
+                print(f"\nProcessing {group_name} with {len(group_samples)} samples: {', '.join(group_samples)}", file=sys.stderr)
+
+                if len(group_samples) < 2:
+                    print(f"  Skipping group {group_name}: needs at least 2 samples.", file=sys.stderr)
+                    continue
+
+                # Find a sample within this group that was processed in the current run to use its temp dir
+                anchor_sample = None
+                group_run_temp_dir = None
+                for sample in group_samples:
+                    if sample in sample_temp_dirs:
+                        anchor_sample = sample
+                        group_run_temp_dir = sample_temp_dirs[anchor_sample]
+                        break # Use the first one found
+
+                if not anchor_sample or not group_run_temp_dir or not group_run_temp_dir.is_dir():
+                     print(f"  Error: Could not find an existing temp directory for any sample in group {group_name}. Samples processed this run: {list(sample_temp_dirs.keys())}. Skipping group.", file=sys.stderr)
+                     continue
+                print(f"  Using temp directory of sample '{anchor_sample}' ({group_run_temp_dir}) for group processing", file=sys.stderr)
+
+                # Define file paths within the anchor sample's run temp dir
+                combined_fasta_path = group_run_temp_dir / f"{group_name}_combined.fasta"
+                aligned_fasta_path = group_run_temp_dir / f"{group_name}_aligned.fasta"
+                distance_matrix_path = group_run_temp_dir / f"{group_name}_snp_distances.tsv"
+
+                # 1. Combine FASTA files for the group
+                print(f"  Combining FASTA files...", file=sys.stderr)
+                valid_samples_in_group = []
+                with open(combined_fasta_path, 'wb') as f_out:
+                    for sample in group_samples:
+                        fasta_gz = fasta_dir / f"{sample}.fasta.gz"
+                        if fasta_gz.is_file():
+                            with gzip.open(fasta_gz, 'rb') as f_in:
+                                shutil.copyfileobj(f_in, f_out)
+                            valid_samples_in_group.append(sample)
+                        else:
+                            print(f"  Warning: FASTA file not found for {sample}, excluding from group alignment.", file=sys.stderr)
+
+                if len(valid_samples_in_group) < 2:
+                    print(f"  Skipping group {group_name}: Fewer than 2 samples with FASTA files found.", file=sys.stderr)
+                    continue
+
+                # 2. Align the combined FASTA using MAFFT via Docker
+                print(f"  Aligning combined FASTA using MAFFT (via Docker)...", file=sys.stderr)
+                # MAFFT writes alignment to stdout, so we capture it
+                # Mount the group's temp directory to /data in the container
+                # Mount the sample's run temp directory, MAFFT reads/writes relative to that mount point
+                mafft_docker_cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{group_run_temp_dir.resolve()}:/data", # Mount the sample's run temp dir
+                    "pegi3s/mafft", # Docker image
+                    "mafft", "--adjustdirection", "--auto", "--quiet", "--thread", "1", "--reorder",
+                    f"/data/{combined_fasta_path.name}" # Input file path inside container (/data/group_name_combined.fasta)
+                ]
+                print(f"  Running Docker MAFFT command: {' '.join(mafft_docker_cmd)}", file=sys.stderr)
+                try:
+                    # Run Docker command, capture stdout (alignment)
+                    mafft_process = subprocess.run(mafft_docker_cmd, check=True, text=True, capture_output=True)
+                    # Write captured stdout to the aligned fasta file
+                    with open(aligned_fasta_path, 'w') as f_aligned_out:
+                        f_aligned_out.write(mafft_process.stdout)
+                    print(f"  MAFFT alignment complete: {aligned_fasta_path}", file=sys.stderr)
+                except FileNotFoundError:
+                     print(f"  Error: MAFFT executable not found at {args.mafft_path}. Skipping group {group_name}.", file=sys.stderr)
+                     continue # Skip to next group
+                except subprocess.CalledProcessError as e:
+                     print(f"  Error running MAFFT for group {group_name}: {e}", file=sys.stderr)
+                     if e.stderr: print(f"  MAFFT Stderr:\n{e.stderr}", file=sys.stderr)
+                     continue # Skip to next group
+
+                # 3. Run snp-dists on the aligned FASTA
+                print(f"  Running snp-dists on aligned FASTA...", file=sys.stderr)
+                # snp-dists needs the output file specified with -o
+                snp_command = [args.snp_dists_path, "-m", str(aligned_fasta_path)] # Use -m for molten format, output goes to stdout
+                try:
+                    # Run snp-dists, capture stdout
+                    snp_process = subprocess.run(snp_command, check=False, text=True, capture_output=True) # Use check=False to handle errors manually
+                    if snp_process.returncode == 0:
+                        # Write captured stdout to the distance matrix file
+                        with open(distance_matrix_path, 'w') as f_dist_out:
+                            f_dist_out.write(snp_process.stdout)
+                        print(f"  snp-dists completed. Output written to: {distance_matrix_path}", file=sys.stderr)
+                        # Store the path for potential reuse in plotting
+                        generated_distance_matrices[group_key] = distance_matrix_path
+                    else:
+                        # Raise an error to be caught by the outer exception handler
+                        raise subprocess.CalledProcessError(
+                            returncode=snp_process.returncode,
+                            cmd=snp_command,
+                            stderr=snp_process.stderr,
+                            stdout=snp_process.stdout
+                        )
+                    # Also generate the square matrix needed for plotting
+                    square_matrix_path = group_run_temp_dir / f"{group_name}_snp_distances_square.tsv"
+                    
+                    snp_square_command = [args.snp_dists_path, "-b", str(aligned_fasta_path)] # Default square format to stdout
+                    try:
+                         snp_square_process = subprocess.run(snp_square_command, check=False, text=True, capture_output=True)
+                         if snp_square_process.returncode == 0:
+                              with open(square_matrix_path, 'w') as f_sq_out:
+                                   f_sq_out.write(snp_square_process.stdout)
+                              print(f"  snp-dists (square matrix for plotting) completed. Output: {square_matrix_path}", file=sys.stderr)
+                              # Store the path to the square matrix for potential reuse in plotting
+                              generated_distance_matrices[group_key] = square_matrix_path # Store path to SQUARE matrix
+                         else:
+                              # Log error but don't necessarily stop the whole process, plotting might fail later
+                              print(f"  Warning: snp-dists failed to generate square matrix for plotting. Code: {snp_square_process.returncode}", file=sys.stderr)
+                              if snp_square_process.stderr: print(f"  Stderr:\n{snp_square_process.stderr}", file=sys.stderr)
+
+                    except Exception as plot_e:
+                         # Catch errors during square matrix generation but don't stop link confirmation
+                         print(f"  Warning: Error generating square snp-dists matrix for plotting: {plot_e}", file=sys.stderr)
+
+                except FileNotFoundError:
+                     print(f"  Error: snp-dists executable not found at {args.snp_dists_path}. Skipping group {group_name}.", file=sys.stderr)
+                     continue # Skip to next group
+                except subprocess.CalledProcessError as e:
+                     print(f"  Error running snp-dists for group {group_name}: {e}", file=sys.stderr)
+                     if e.stderr: print(f"  snp-dists Stderr:\n{e.stderr}", file=sys.stderr)
+                     if e.stdout: print(f"  snp-dists Stdout:\n{e.stdout}", file=sys.stderr)
+                     continue # Skip to next group
+
+                # 4. Parse the 3-column distance output and confirm links
+                print(f"  Parsing 3-column distance output to confirm links (Threshold <= 9)...", file=sys.stderr)
+                
+                # Initialize a dictionary to store SNP distances for reporting
+                sample_snp_distances = defaultdict(list)
+
+                try:
+                    with open(distance_matrix_path, 'r') as f_dist:
+                        reader = csv.reader(f_dist, delimiter='\t')
+                        
+                        # Skip header if present (snp-dists -m might not have one, adjust if needed)
+                        # header = next(reader)
+                        for row in reader:
+                            if len(row) == 3:
+                                s1_full, s2_full, distance_str = row
+                                # Get base names
+                                s1_base = get_base_sample_name(s1_full)
+                                s2_base = get_base_sample_name(s2_full)
+
+                                # Ensure we got base names and both original full names were part of the valid group
+                                # (We check valid_samples_in_group earlier, this ensures parsing worked)
+                                if s1_base and s2_base:
+                                    try:
+                                        distance = int(float(distance_str))
+                                        if distance <= 9:
+                                            # Use BASE names for the confirmed pair set
+                                            confirmed_pair_base = tuple(sorted((s1_base, s2_base)))
+                                            # Add confirmed pair (using base names) only once
+                                            if confirmed_pair_base not in newly_linked_pairs_this_run:
+                                                 # Print with base names for clarity
+                                                 print(f"    -> Link confirmed: {s1_base} <-> {s2_base} (SNP Distance: {distance})", file=sys.stderr)
+                                                 newly_linked_pairs_this_run.add(confirmed_pair_base)
+                                                 snp_confirmed_links_count += 1
+                                                 # Add base names to the combined set of all links
+                                                 all_linked_pairs.add(confirmed_pair_base)
+
+                                                 # Store SNP distance for reporting
+                                                 if s1_base != s2_base: # Avoid reporting distance to self
+                                                     sample_snp_distances[s1_base].append((s2_base, distance))
+                                                     sample_snp_distances[s2_base].append((s1_base, distance))
+
+                                    except ValueError:
+                                        print(f"    Warning: Could not parse distance value '{distance_str}' for pair ({s1_full}, {s2_full})", file=sys.stderr)
+                                else:
+                                     print(f"    Warning: Could not get base names for pair ({s1_full}, {s2_full}). Skipping distance check.", file=sys.stderr)
+
+                            # Optionally handle header line if snp-dists -m includes one
+                            elif len(row) > 0 and row[0].lower() == 'sample1': # Example header check
+                                 print(f"    Skipping header row: {row}", file=sys.stderr)
+                            elif row: # Handle other unexpected lines
+                                 print(f"    Warning: Skipping malformed line in distance file: {row}", file=sys.stderr)
+
+                except FileNotFoundError:
+                     print(f"  Error: Distance matrix file not found at {distance_matrix_path}. Cannot confirm links.", file=sys.stderr)
+                except Exception as e:
+                    print(f"  Error parsing distance file {distance_matrix_path} for group {group_name}: {e}", file=sys.stderr)
+
+            print(f"\nSNP Confirmation finished. {snp_confirmed_links_count} links confirmed across all groups.", file=sys.stderr)
+
+    except Exception as e:
+         print(f"Error during SNP confirmation step: {e}", file=sys.stderr)
+         # Decide if this should be fatal or just a warning
+    # No finally block needed here; temp dirs are handled by the main loop's finally based on args.keep_tmp
+
+
     # --- Step 3: Stateful Clustering Update ---
+    # This step now uses 'newly_linked_pairs_this_run' which only contains SNP-confirmed links from this run.
     print("\n--- Running Step 3: Stateful Clustering Update ---", file=sys.stderr)
     # Initialize current state from loaded data
     current_clusters = existing_clusters_map.copy() # {cluster_name: {samples}}
@@ -579,169 +720,72 @@ def main():
             for sample in new_cluster_set:
                 current_sample_to_cluster[sample] = new_cluster_name
                 report_events[sample].append(f"formed new cluster {new_cluster_name}")
+            
+            # Create directory for the new cluster within Reports
+            cluster_dir = new_cluster_name
+            os.makedirs(cluster_dir, exist_ok=True)
+            print(f"Created directory: {cluster_dir}", file=sys.stderr)
+
+            # Define source and destination paths for SNP distance matrix and PDF
+            # Assuming SNP distance matrix for cluster is in Reports and named like '{cluster_name}_snp_distances_square.tsv'
+            snp_matrix_src = square_matrix_path
+            snp_matrix_dest = os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances_square.tsv")
+            
+
+            # Copy SNP distance matrix and PDF to the new cluster directory
+            if os.path.exists(snp_matrix_src):
+                shutil.copy2(snp_matrix_src, snp_matrix_dest)
+                print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
+            else:
+                print(f"Warning: SNP distance matrix file not found for {new_cluster_name} at {snp_matrix_src}", file=sys.stderr)
             next_cluster_id_counter += 1
 
     # --- Write the final cluster state to file ---
     cluster_file_path = reports_dir / "clusters.txt"
-    final_cluster_count = 0
-    cluster_info_for_plotting = [] # Reset and populate with final state
-    final_sample_to_cluster_map = {} # Create final map for reporting
-
     try:
         with open(cluster_file_path, "w") as f_cluster:
-            # Sort clusters by number for consistent output
-            sorted_cluster_names = sorted(current_clusters.keys(), key=lambda name: int(name.split('_')[-1]))
-
-            for cluster_name in sorted_cluster_names:
-                if cluster_name not in clusters_to_delete:
-                    final_cluster_count += 1
-                    samples_in_cluster = sorted(list(current_clusters[cluster_name]))
-                    f_cluster.write(f"{cluster_name}\t{','.join(samples_in_cluster)}\n")
-                    # Store info for plotting
-                    cluster_info_for_plotting.append({
-                        "name": cluster_name,
-                        "samples": samples_in_cluster
-                    })
-                    # Update final map for reporting
-                    for s in samples_in_cluster:
-                        final_sample_to_cluster_map[s] = cluster_name
-
-            if final_cluster_count == 0:
-                 #f_cluster.write("No linked clusters found.\n")
-                 print("No final linked clusters to write.", file=sys.stderr)
-            else:
-                 print(f"Wrote {final_cluster_count} final cluster(s) to {cluster_file_path}", file=sys.stderr)
-                 files_to_send.append(cluster_file_path)
-
-    except IOError as e:
-        print(f"Error writing final cluster file {cluster_file_path}: {e}", file=sys.stderr)
+            for cluster_name, samples in current_clusters.items():
+                f_cluster.write(f"{cluster_name}\t{','.join(sorted(samples))}\n")
+        print(f"Updated clusters written to {cluster_file_path}.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error writing clusters to {cluster_file_path}: {e}", file=sys.stderr)
 
     # Note: final_sample_to_cluster_map now holds the definitive cluster assignment for each sample
     # The report generation logic later needs to be updated to use this map and the report_events dictionary.
+    final_sample_to_cluster_map = current_sample_to_cluster.copy()
+
+    # Prepare cluster information for plotting
+    cluster_info_for_plotting = []
+    # Use the final clusters after potential merges/deletions
+    final_clusters_after_update = {k: v for k, v in current_clusters.items() if k not in clusters_to_delete}
+    for cluster_name, cluster_samples in final_clusters_after_update.items():
+         # Only plot clusters that were newly created or modified *structurally* this run
+         # (i.e., added samples, merged, or newly formed)
+         if cluster_name in modified_clusters_this_run:
+              cluster_info_for_plotting.append({
+                   "name": cluster_name,
+                   "samples": cluster_samples # Use the final set of samples
+              })
+
 
     # --- Step 3b: Generate Cluster Plots (Looping after cluster file is written) ---
     print("\n--- Running Step 3b: Generating Cluster Plots ---", file=sys.stderr)
-    if not cluster_info_for_plotting:
-         print("No clusters found or generated, skipping plotting.", file=sys.stderr)
-    else:
-        for cluster_info in cluster_info_for_plotting:
-            cluster_name = cluster_info["name"]
-            sorted_samples = cluster_info["samples"]
-            
-            # Only process cluster if it was modified
-            if cluster_name not in modified_clusters_this_run:
-                print(f"--- Skipping analysis for unchanged {cluster_name} ---", file=sys.stderr)
-                final_pdf_path = reports_dir / f"{cluster_name}_tsne.pdf"
-                if final_pdf_path.is_file():
-                     files_to_send.append(final_pdf_path)
-                continue  # Skip to the next cluster
-            
-            print(f"--- Analyzing and Generating Plot for {cluster_name} ---", file=sys.stderr)
-            cluster_analysis_dir = None  # Initialize for error handling before creation
-            try:
-                # Create a persistent directory for this cluster's analysis
-                cluster_analysis_dir = args.base_dir / cluster_name
-                cluster_analysis_dir.mkdir(parents=True, exist_ok=True)
-                print(f"Using analysis directory for cluster: {cluster_analysis_dir}", file=sys.stderr)
+    # Generate plots for new or modified clusters
 
-                # 1. Combine FASTA files for cluster members
-                cluster_combined_fasta = cluster_analysis_dir / f"{cluster_name}_combined.fasta"
-                cluster_fasta_files = []
-                with open(cluster_combined_fasta, "wb") as f_out_cat:
-                    for sample in sorted_samples:
-                        sample_fasta_gz = fasta_dir / f"{sample}.fasta.gz"
-                        if sample_fasta_gz.is_file():
-                            cluster_fasta_files.append(sample_fasta_gz)
-                            try:
-                                with gzip.open(sample_fasta_gz, "rb") as f_in:
-                                    shutil.copyfileobj(f_in, f_out_cat)
-                            except Exception as e:
-                                print(f"Warning: Error reading/writing {sample_fasta_gz} for {cluster_name}: {e}", file=sys.stderr)
-                        else:
-                            print(f"Warning: FASTA file not found for member {sample}: {sample_fasta_gz}", file=sys.stderr)
-
-                if not cluster_fasta_files:
-                    print(f"Error: No FASTA files for any members of {cluster_name}. Skipping plot.", file=sys.stderr)
-                    continue
-
-                # 2. Align combined FASTA using MAFFT (via Docker)
-                cluster_aligned_fasta = cluster_analysis_dir / f"{cluster_name}_aligned.fasta"
-                mafft_docker_cmd = [
-                    "docker", "run", "--rm",
-                    "-v", f"{cluster_analysis_dir.resolve()}:/data",
-                    "pegi3s/mafft",
-                    "mafft", "--adjustdirection", "--auto", "--quiet", "--thread", "1", "--reorder",
-                    f"/data/{cluster_combined_fasta.name}"
-                ]
-                print(f"Running MAFFT for {cluster_name}...", file=sys.stderr)
-                try:
-                    with open(cluster_aligned_fasta, 'w') as f_out_aln:
-                        proc_mafft = subprocess.run(mafft_docker_cmd, cwd=cluster_analysis_dir, text=True,
-                                                      capture_output=True, check=True)
-                        f_out_aln.write(proc_mafft.stdout)
-                        if proc_mafft.stderr:
-                            print(f"MAFFT stderr for {cluster_name}:\n{proc_mafft.stderr}", file=sys.stderr)
-                except Exception as e:
-                    print(f"ERROR: MAFFT failed for {cluster_name}: {e}", file=sys.stderr)
-                    continue
-
-                if not cluster_aligned_fasta.is_file() or cluster_aligned_fasta.stat().st_size == 0:
-                    print(f"MAFFT produced empty alignment for {cluster_name}. Skipping plot.", file=sys.stderr)
-                    continue
-
-                # 3. Generate distance matrix using snp-dists
-                cluster_pmatrix_file = cluster_analysis_dir / f"{cluster_name}_ident.pmatrix"
-                snp_dists_cmd_str = f"{args.snp_dists_path} -m {cluster_aligned_fasta.resolve()} > {cluster_pmatrix_file.resolve()}"
-                print(f"Running snp-dists for {cluster_name}: {snp_dists_cmd_str}", file=sys.stderr)
-                try:
-                    proc_snp = subprocess.run(snp_dists_cmd_str, shell=True, cwd=cluster_analysis_dir,
-                                              text=True, capture_output=True, check=True)
-                except Exception as e:
-                    print(f"ERROR: snp-dists failed for {cluster_name}: {e}", file=sys.stderr)
-                    continue
-
-                if not cluster_pmatrix_file.is_file() or cluster_pmatrix_file.stat().st_size == 0:
-                    print(f"snp-dists produced empty matrix for {cluster_name}. Skipping plot.", file=sys.stderr)
-                    continue
-
-                # 4. Run R script to generate t-SNE plot
-                external_r_script_path = args.base_dir / "plot_tsne.R"
-                if not external_r_script_path.is_file():
-                     print(f"Error: R script plot_tsne.R not found at {external_r_script_path}. Skipping plot.", file=sys.stderr)
-                     continue
-
-                r_cmd_list = [args.rscript_path, str(external_r_script_path.resolve()), str(cluster_pmatrix_file.resolve())]
-                print(f"Running R script for {cluster_name}: {' '.join(r_cmd_list)}", file=sys.stderr)
-                try:
-                    r_process = subprocess.run(r_cmd_list, cwd=cluster_analysis_dir, text=True,
-                                               capture_output=True, check=False)
-                    if r_process.returncode != 0:
-                        print(f"ERROR: R script for {cluster_name} failed (exit code {r_process.returncode}).", file=sys.stderr)
-                        continue
-                except Exception as r_e:
-                     print(f"Error executing R script for {cluster_name}: {r_e}", file=sys.stderr)
-                     continue
-
-                # 5. Move and rename the plot PDF
-                temp_pdf_output_path = cluster_analysis_dir / (cluster_pmatrix_file.stem + "_tsne.pdf")
-                final_pdf_path = reports_dir / f"{cluster_name}_tsne.pdf"
-                if temp_pdf_output_path.is_file():
-                    try:
-                        shutil.move(str(temp_pdf_output_path), str(final_pdf_path))
-                        print(f"Moved TSNE plot for {cluster_name} to: {final_pdf_path}", file=sys.stderr)
-                        files_to_send.append(final_pdf_path)
-                    except Exception as e:
-                        print(f"Error moving plot for {cluster_name}: {e}", file=sys.stderr)
-                else:
-                    print(f"Error: Expected TSNE plot not found for {cluster_name} at {temp_pdf_output_path}", file=sys.stderr)
-
-            except Exception as cluster_e:
-                 print(f"Error processing cluster {cluster_name} for plotting: {cluster_e}", file=sys.stderr)
-
+    # 3. Run plot_tsne.R script
+    print(f"  Running R script for t-SNE plot...", file=sys.stderr)
+    r_script_path = args.base_dir / "plot_tsne.R" # Assuming it's in base_dir
+    if not r_script_path.is_file():
+            print(f"  Error: R script not found at {r_script_path}", file=sys.stderr)
+            raise FileNotFoundError(f"R script not found: {r_script_path}")
+    plot_output_pdf = Path(cluster_name) / f"{cluster_name}.pdf"
+    r_command = [args.rscript_path, str(r_script_path), str(distance_matrix_path), str(plot_output_pdf)]
+    print(f"  Running R script command: {' '.join(r_command)}", file=sys.stderr)
+    subprocess.run(r_command, check=True, text=True, capture_output=True)
 
     # --- Generate Run Report ---
     print("\n--- Generating Run Report ---", file=sys.stderr)
-    run_report_file = reports_dir / f"Run_Report_{datetime.date.today()}.txt"
+    run_report_file = reports_dir / f"Run_Report_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
     try:
         # Create a map of sample -> final cluster details for easy lookup
         # final_sample_to_cluster_map is created in Step 3
@@ -857,10 +901,234 @@ def main():
         print(f"Error writing run report file {run_report_file}: {e}", file=sys.stderr)
 
 
-    # --- Step 4: Emailing (Optional) ---
-    print("\n--- Pipeline Finished ---", file=sys.stderr)
+    # --- Step 3c: Append Clustering Summary to Individual Reports ---
+    print("\n--- Running Step 3c: Appending Cluster Summary to Sample Reports ---", file=sys.stderr)
+    final_clusters_after_update = {k: v for k, v in current_clusters.items() if k not in clusters_to_delete}
 
-    print("Reports generated in:", reports_dir, file=sys.stderr)
+    for sample in processed_samples: # Iterate through samples processed in this run
+        report_file = reports_dir / f"{sample}_report.out"
+        if not report_file.is_file():
+            print(f"  Warning: Report file for {sample} not found at {report_file}. Cannot append cluster summary.", file=sys.stderr)
+            continue
+
+        try:
+            with open(report_file, 'a') as f_out:
+                f_out.write("\n--- SNP Clustering Analysis ---\n")
+
+                final_cluster_name = final_sample_to_cluster_map.get(sample)
+
+                if not final_cluster_name:
+                    f_out.write("No SNP link found, not part of a cluster.\n")
+                else:
+                    # Ensure the final cluster name reflects any merges
+                    while final_cluster_name in merged_cluster_log:
+                         final_cluster_name = merged_cluster_log[final_cluster_name]
+
+                    final_members = sorted(list(final_clusters_after_update.get(final_cluster_name, set())))
+                    final_members_str = ", ".join(final_members)
+
+                    # Check for specific events recorded during clustering update
+                    event_found = False
+                    if sample in report_events:
+                        # Check for merge event first as it's more specific
+                        merge_event_details = next((e for e in report_events[sample] if "caused merge" in e), None)
+                        if merge_event_details:
+                             # Extract original cluster names if possible (might be complex depending on report_events format)
+                             # Simplified message:
+                             f_out.write(f"SNP link found, Involved in merge resulting in {final_cluster_name} -> {final_members_str}\n")
+                             event_found = True
+                        else:
+                            added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
+                            formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
+
+                            if formed_event:
+                                f_out.write(f"SNP link found, New cluster created {final_cluster_name} -> {final_members_str}\n")
+                                event_found = True
+                            elif added_event:
+                                f_out.write(f"SNP link found, Added to existing {final_cluster_name} -> {final_members_str}\n")
+                                event_found = True
+
+                    # If no specific event, determine if it was already there or joined passively
+                    if not event_found:
+                         initial_cluster = initial_sample_to_cluster.get(sample)
+                         # Adjust initial cluster if it was merged
+                         while initial_cluster in merged_cluster_log:
+                              initial_cluster = merged_cluster_log[initial_cluster]
+
+                         if initial_cluster == final_cluster_name:
+                              f_out.write(f"SNP link found within existing {final_cluster_name} -> {final_members_str}\n")
+                         else:
+                              # Sample ended up in the cluster, likely due to other links causing merges/additions
+                              f_out.write(f"SNP link found, Now part of {final_cluster_name} -> {final_members_str}\n")
+
+        except IOError as e:
+            print(f"  Error appending cluster summary to {report_file}: {e}", file=sys.stderr)
+        except Exception as e:
+             print(f"  Unexpected error appending cluster summary for {sample}: {e}", file=sys.stderr)
+
+
+    # --- Generate Run Report ---
+    print("\n--- Generating Run Report ---", file=sys.stderr)
+    run_report_file = reports_dir / f"Run_Report_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt" # Added timestamp to avoid overwrites
+    try:
+        with open(run_report_file, 'w') as f_report:
+            f_report.write(f"Master Pipeline Run Report - {datetime.datetime.now()}\n")
+            f_report.write("="*40 + "\n")
+            f_report.write("Command Line Arguments:\n")
+            f_report.write(f"  Reads Directory: {args.reads_dir}\n")
+            f_report.write(f"  Base Directory: {args.base_dir}\n")
+            f_report.write(f"  Keep Temp Dirs: {args.keep_tmp}\n")
+            f_report.write(f"  Keep Unmerged Reads: {args.keep_unmerged}\n")
+            f_report.write(f"  SNP Distance Threshold: <= 9\n") # Hardcoded based on logic
+            f_report.write(f"  Kmer Overlap Threshold: {args.kmer_overlap_threshold}\n")
+            f_report.write("="*40 + "\n\n")
+            f_report.write("Sample Processing Summary:\n")
+            f_report.write("-" * 30 + "\n")
+            # Use a structured approach for sample reporting
+            processed_samples_in_report = set()
+            sample_order = []
+            temp_sample_lines = defaultdict(list)
+            current_processing_sample = None
+            for line in run_report_lines:
+                 if line.startswith("--- Sample:"):
+                      current_processing_sample = line.split(":")[-1].strip().split(" ")[0]
+                      if current_processing_sample not in sample_order:
+                           sample_order.append(current_processing_sample)
+                      temp_sample_lines[current_processing_sample].append(line) # Add header
+                      temp_sample_lines[current_processing_sample].append("") # Add blank line
+                 elif current_processing_sample:
+                      temp_sample_lines[current_processing_sample].append(line)
+
+            # Write report sample by sample
+            for sample in sample_order:
+                processed_samples_in_report.add(sample)
+                f_report.write("\n".join(temp_sample_lines[sample]) + "\n") # Write buffered lines
+
+                # Add SNP distance details to the report
+                if sample in sample_snp_distances and sample_snp_distances[sample]:
+                    f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= 9):\n")
+                    # Sort distances for consistent reporting
+                    sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
+                    for linked_sample, distance in sorted_distances:
+                        f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance})\n")
+                    f_report.write("\n") # Add a blank line after the distances
+
+                # Determine cluster status based on events and final mapping
+                cluster_status_reported = False
+                if sample in report_events:
+                    merge_event = next((e for e in report_events[sample] if "caused merge" in e), None)
+                    added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
+                    formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
+
+                    final_cluster_name = final_sample_to_cluster_map.get(sample)
+                    if final_cluster_name:
+                         # Resolve final cluster name in case of chained merges
+                         while final_cluster_name in merged_cluster_log:
+                              final_cluster_name = merged_cluster_log[final_cluster_name]
+                         members = sorted(list(final_clusters_after_update.get(final_cluster_name, set())))
+                         members_str = ", ".join(members)
+                         if merge_event:
+                              f_report.write(f"\n{sample} involved in merge resulting in {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                         elif added_event:
+                              f_report.write(f"\n{sample} added to {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                         elif formed_event:
+                              f_report.write(f"\n{sample} formed new {final_cluster_name} -> {members_str}\n")
+                              cluster_status_reported = True
+                    else: # Should not happen if event occurred, but safety check
+                         f_report.write(f"\n{sample} involved in cluster event, but final cluster unknown.\n")
+                         cluster_status_reported = True
+
+                # If no specific event reported, check if it's just part of a cluster
+                if not cluster_status_reported and sample in final_sample_to_cluster_map:
+                    cluster_name = final_sample_to_cluster_map[sample]
+                    # Resolve final cluster name in case of chained merges
+                    while cluster_name in merged_cluster_log:
+                         cluster_name = merged_cluster_log[cluster_name]
+                    members = sorted(list(final_clusters_after_update.get(cluster_name, set())))
+                    members_str = ", ".join(members)
+                    # Check if it was already in that cluster initially
+                    initial_cluster = initial_sample_to_cluster.get(sample)
+                    while initial_cluster in merged_cluster_log: # Resolve initial cluster too
+                         initial_cluster = merged_cluster_log[initial_cluster]
+
+                    if initial_cluster == cluster_name:
+                         f_report.write(f"\n{sample} already part of {cluster_name} -> {members_str}\n")
+                    else: # Part of final cluster, but wasn't initially or added/merged explicitly
+                         f_report.write(f"\n{sample} part of final {cluster_name} -> {members_str}\n")
+                    cluster_status_reported = True
+
+                # If still no cluster status reported, assume no links/not clustered
+                if not cluster_status_reported:
+                     f_report.write(f"\n{sample} has no confirmed links and is not part of any cluster.\n")
+
+                f_report.write("\n" + "="*50 + "\n\n") # Separator
+
+            # Add entries for any processed samples missed by the loop (e.g., failed very early)
+            all_processed_samples = set(sample_temp_dirs.keys()) # Get all samples attempted
+            missed_samples = all_processed_samples - processed_samples_in_report
+            if missed_samples:
+                 f_report.write("Samples with Incomplete Processing:\n")
+                 f_report.write("-" * 30 + "\n")
+                 for sample in sorted(list(missed_samples)):
+                      f_report.write(f"--- Sample: {sample} ---\n")
+                      # Try to find a status line for it in the original run_report_lines
+                      status_line = next((line for line in run_report_lines if sample in line and ("FAILED" in line or "SKIPPED" in line)), None)
+                      if status_line:
+                           f_report.write(status_line.strip() + "\n")
+                      else:
+                           f_report.write(f"Status: Processing details incomplete (check individual report: {reports_dir / f'{sample}_report.out'}).\n")
+                      f_report.write(f"{sample} has no confirmed links and is not part of any cluster.\n")
+                      f_report.write("\n" + "="*50 + "\n\n")
+
+            # Remove final blank line if report ends with separator
+            f_report.seek(0, os.SEEK_END) # Go to end
+            if f_report.tell() > 2: # Check if file is not empty
+                 f_report.seek(f_report.tell() - 2) # Go back 2 bytes
+                 last_chars = f_report.read(2)
+                 if last_chars == "\n\n":
+                      f_report.seek(f_report.tell() - 2)
+                      f_report.truncate()
+
+
+        print(f"Run report saved to: {run_report_file}", file=sys.stderr)
+        files_to_send.append(run_report_file)
+    except IOError as e:
+        print(f"Error writing run report file {run_report_file}: {e}", file=sys.stderr)
+
+
+        # --- Append SNP Distance Details to Individual Reports ---
+        print("\n--- Appending SNP Distance Details to Individual Reports ---", file=sys.stderr)
+        if 'processed_samples' in locals() and 'sample_snp_distances' in locals():
+            for sample in processed_samples:
+                report_file = reports_dir / f"{sample}_report.out"
+                if report_file.is_file() and sample in sample_snp_distances and sample_snp_distances[sample]:
+                    try:
+                        with open(report_file, 'a') as f_out:
+                            f_out.write(f"\nMinimum SNP Distances to Other Samples (<= 9):\n")
+                            # Sort distances for consistent reporting
+                            sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
+                            for linked_sample, distance in sorted_distances:
+                                f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance})\n")
+                            f_out.write("\n") # Add a blank line after the distances
+                        print(f"  Appended SNP distance details to {report_file}", file=sys.stderr)
+                    except IOError as e:
+                        print(f"  Error appending SNP distance details to {report_file}: {e}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"  Unexpected error appending SNP distance details for {sample}: {e}", file=sys.stderr)
+                elif not report_file.is_file():
+                     print(f"  Warning: Individual report file not found for {sample} at {report_file}. Cannot append SNP details.", file=sys.stderr)
+                # else: sample_snp_distances[sample] is empty, no details to append
+
+        else:
+            print("  Warning: processed_samples or sample_snp_distances not found. Skipping appending SNP details to individual reports.", file=sys.stderr)
+
+
+        # --- Step 4: Emailing (Optional) ---
+        print("\n--- Pipeline Finished ---", file=sys.stderr)
+
+        print("Reports generated in:", reports_dir, file=sys.stderr)
 
 
 if __name__ == "__main__":
