@@ -180,6 +180,7 @@ def main():
     parser.add_argument("--mafft_path", type=str, default="mafft", help="Path to the mafft executable.") # Added MAFFT path
     parser.add_argument("--rscript_path", type=str, default="Rscript", help="Path to the Rscript executable.")
     parser.add_argument("--hcv_kmer_threshold", type=float, default=0.1, help="Minimum fraction of matching kmers for a sample to be considered HCV")
+    fasttree = "/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/FastTree"
     args = parser.parse_args()
 
     # --- Validate paths and setup directories ---
@@ -549,14 +550,11 @@ def main():
                               print(f"  snp-dists (square matrix for plotting) completed. Output: {square_matrix_path}", file=sys.stderr)
                               # Store the path to the square matrix for potential reuse in plotting
                               generated_distance_matrices[group_key] = square_matrix_path # Store path to SQUARE matrix
-                         else:
-                              # Log error but don't necessarily stop the whole process, plotting might fail later
-                              print(f"  Warning: snp-dists failed to generate square matrix for plotting. Code: {snp_square_process.returncode}", file=sys.stderr)
-                              if snp_square_process.stderr: print(f"  Stderr:\n{snp_square_process.stderr}", file=sys.stderr)
+
 
                     except Exception as plot_e:
-                         # Catch errors during square matrix generation but don't stop link confirmation
-                         print(f"  Warning: Error generating square snp-dists matrix for plotting: {plot_e}", file=sys.stderr)
+                        # Catch errors during square matrix generation but don't stop link confirmation
+                        print(f"  Warning: Error generating square snp-dists matrix for plotting: {plot_e}", file=sys.stderr)
 
                 except FileNotFoundError:
                      print(f"  Error: snp-dists executable not found at {args.snp_dists_path}. Skipping group {group_name}.", file=sys.stderr)
@@ -730,8 +728,11 @@ def main():
             # Assuming SNP distance matrix for cluster is in Reports and named like '{cluster_name}_snp_distances_square.tsv'
             snp_matrix_src = square_matrix_path
             snp_matrix_dest = os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances_square.tsv")
-            
-
+            aligned_fasta_path_dest = os.path.join(cluster_dir, f"{new_cluster_name}_aligned.fasta")
+            # Copy aligned FASTA to the new cluster directory   
+            if os.path.exists(aligned_fasta_path):
+                shutil.copy2(aligned_fasta_path, aligned_fasta_path_dest)
+                print(f"Copied {aligned_fasta_path} to {aligned_fasta_path_dest}", file=sys.stderr)
             # Copy SNP distance matrix and PDF to the new cluster directory
             if os.path.exists(snp_matrix_src):
                 shutil.copy2(snp_matrix_src, snp_matrix_dest)
@@ -772,16 +773,72 @@ def main():
     print("\n--- Running Step 3b: Generating Cluster Plots ---", file=sys.stderr)
     # Generate plots for new or modified clusters
 
-    # 3. Run plot_tsne.R script
-    print(f"  Running R script for t-SNE plot...", file=sys.stderr)
-    r_script_path = args.base_dir / "plot_tsne.R" # Assuming it's in base_dir
-    if not r_script_path.is_file():
+    # Visualization Section
+    try:
+        # t-SNE Visualization
+        print(f"  Running R script for t-SNE plot...", file=sys.stderr)
+        r_script_path = args.base_dir / "plot_tsne.R"
+        if not r_script_path.is_file():
             print(f"  Error: R script not found at {r_script_path}", file=sys.stderr)
             raise FileNotFoundError(f"R script not found: {r_script_path}")
-    plot_output_pdf = Path(cluster_name) / f"{cluster_name}.pdf"
-    r_command = [args.rscript_path, str(r_script_path), str(distance_matrix_path), str(plot_output_pdf)]
-    print(f"  Running R script command: {' '.join(r_command)}", file=sys.stderr)
-    subprocess.run(r_command, check=True, text=True, capture_output=True)
+        
+        plot_output_pdf = Path(cluster_name) / f"{cluster_name}_tsne.pdf"
+        r_command = [
+            args.rscript_path,
+            str(r_script_path),
+            str(distance_matrix_path),
+            str(plot_output_pdf)
+        ]
+        print(f"  Running R script command: {' '.join(r_command)}", file=sys.stderr)
+        result = subprocess.run(r_command, check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"  Warning: t-SNE plot generation returned code {result.returncode}", file=sys.stderr)
+            if result.stderr:
+                print(f"  t-SNE stderr: {result.stderr}", file=sys.stderr)
+
+        # MST Visualization
+        print(f"  Running MST visualization...", file=sys.stderr)
+        mst_output = Path(cluster_name) / f"{cluster_name}_MST.pdf"
+        mst_cmd = [
+            args.rscript_path,
+            str(args.base_dir / "plot_mst.R"),
+            str(square_matrix_path),
+            str(mst_output)
+        ]
+        print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
+        result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"  Warning: MST plot generation returned code {result.returncode}", file=sys.stderr)
+            if result.stderr:
+                print(f"  MST stderr: {result.stderr}", file=sys.stderr)
+
+        # Phylogenetic Tree Visualization
+        print(f"  Running Phylogenetic Tree visualization...", file=sys.stderr)
+        phylo_output = Path(cluster_name) / f"{cluster_name}_phylo_tree.pdf"
+        phylo_cmd = [
+            args.rscript_path,
+            str(args.base_dir / "plot_phylogeny.R"),
+            str(square_matrix_path),
+            str(phylo_output)
+        ]
+        print(f"  Running Phylo Tree command: {' '.join(phylo_cmd)}", file=sys.stderr)
+        result = subprocess.run(phylo_cmd, check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"  Warning: Phylo Tree plot generation returned code {result.returncode}", file=sys.stderr)
+            if result.stderr:
+                print(f"  Phylo Tree stderr: {result.stderr}", file=sys.stderr)
+    except FileNotFoundError as e:
+        print(f"  Error: Required file not found for visualization generation: {e}", file=sys.stderr)
+        print(f"  Continuing with report generation...", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"  Error during visualization generation: {e}", file=sys.stderr)
+        if e.stderr:
+            print(f"  Visualization stderr: {e.stderr}", file=sys.stderr)
+        print(f"  Continuing with report generation...", file=sys.stderr)
+
+    except Exception as e:
+        print(f"  Error during visualization generation: {e}", file=sys.stderr)
+        print(f"  Continuing with report generation...", file=sys.stderr)
 
     # --- Generate Run Report ---
     print("\n--- Generating Run Report ---", file=sys.stderr)
@@ -1135,3 +1192,4 @@ if __name__ == "__main__":
     # Need datetime for timestamp
     # import datetime # Already imported above
     main()
+
