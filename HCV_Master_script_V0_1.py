@@ -65,23 +65,27 @@ def find_clusters(linked_pairs: set) -> list[set]:
     return clusters
 
 def get_base_sample_name(full_seq_name: str) -> str | None:
-    """Extracts the base sample name (e.g., GP00096) from a full sequence name (e.g., 5_GP00096_188)."""
+    """Extracts the base sample name (e.g., 1700046311) from a full sequence name (e.g., _R_158_1700046311_1)."""
     parts = full_seq_name.split('_')
+    
+    # Handle _R_* prefixed names (e.g., _R_158_1700046311_1)
+    if len(parts) >= 3 and parts[0] == '' and parts[1] == 'R' and parts[2].isdigit():
+        # The sample ID is the part before the last underscore
+        base_name = parts[-2] if len(parts) > 3 else full_seq_name
+        if base_name.isdigit():  # Ensure it's a numeric sample ID
+            return base_name
+    
+    # Original handling for other formats
     if len(parts) >= 2:
-        # Assume the base name is the second part, potentially joining if base name itself has underscores
-        # A safer assumption might be needed if names like 'Sample_A_1' occur.
-        # For now, assume simple structure like 'Num_BaseName_Num' or 'BaseName'
         if parts[0].isdigit() and parts[-1].isdigit() and len(parts) >= 3:
-             return "_".join(parts[1:-1]) # Join middle parts if base name has underscores
+            return "_".join(parts[1:-1])
         elif len(parts) == 1:
-             return parts[0] # Handle case where header is just the base name
-        # Add more robust parsing if needed based on actual header formats
-        # Fallback: return the part after the first underscore if it looks like a GP id
+            return parts[0]
         if len(parts) > 1 and parts[1].startswith("GP"):
-             return parts[1]
-    # Fallback or if parsing fails
+            return parts[1]
+    
     print(f"Warning: Could not reliably parse base name from '{full_seq_name}'. Using full name.", file=sys.stderr)
-    return full_seq_name # Return full name if parsing fails
+    return full_seq_name
 
 
 def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, set[str]], dict[str, str], int, set[tuple[str, str]]]:
@@ -357,7 +361,7 @@ def main():
 
                 distancer_args = [str(args.base_dir), sample_prefix, str(temp_run_dir),  f"--overlap_threshold={args.kmer_overlap_threshold}"]
                 print (f"Distancer arguments: {distancer_args}")
-
+                print (f"Running kmer distancer script for {sample_prefix} with args: {distancer_args}", file=sys.stderr)
                 return_code, stdout = run_script(distancer_script_path, distancer_args, capture_stdout=True)
 
                 if return_code != 0 or not stdout:
@@ -432,8 +436,9 @@ def main():
     # Store generated distance matrices for potential reuse in plotting
     # Key: frozenset of samples in the group, Value: Path to distance matrix
     generated_distance_matrices = {}
-    # We will use the temp directory of one of the samples within the group
-
+    # Initialize sample_snp_distances before the try block
+    sample_snp_distances = defaultdict(list)
+    
     try:
         if not potential_kmer_links:
             print("No potential k-mer links found to confirm.", file=sys.stderr)
@@ -775,6 +780,7 @@ def main():
 
     # Visualization Section
     try:
+        '''
         # t-SNE Visualization
         print(f"  Running R script for t-SNE plot...", file=sys.stderr)
         r_script_path = args.base_dir / "plot_tsne.R"
@@ -795,20 +801,20 @@ def main():
             print(f"  Warning: t-SNE plot generation returned code {result.returncode}", file=sys.stderr)
             if result.stderr:
                 print(f"  t-SNE stderr: {result.stderr}", file=sys.stderr)
-
+        '''
         # MST Visualization
         print(f"  Running MST visualization...", file=sys.stderr)
-        mst_output = Path(cluster_name) / f"{cluster_name}_MST.pdf"
+        mst_output = Path(cluster_name) / f"{cluster_name}_mst_interactive.html"
         mst_cmd = [
-            args.rscript_path,
-            str(args.base_dir / "plot_mst.R"),
+            sys.executable,
+            str(args.base_dir / "build_mst.py"),
             str(square_matrix_path),
             str(mst_output)
         ]
         print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
         result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
         if result.returncode != 0:
-            print(f"  Warning: MST plot generation returned code {result.returncode}", file=sys.stderr)
+            print(f"  Warning: MST generation returned code {result.returncode}", file=sys.stderr)
             if result.stderr:
                 print(f"  MST stderr: {result.stderr}", file=sys.stderr)
 
@@ -817,8 +823,8 @@ def main():
         phylo_output = Path(cluster_name) / f"{cluster_name}_phylo_tree.pdf"
         phylo_cmd = [
             args.rscript_path,
-            str(args.base_dir / "plot_phylogeny.R"),
-            str(square_matrix_path),
+            str(args.base_dir / "plot_phylo_tree.R"),
+            str(aligned_fasta_path),
             str(phylo_output)
         ]
         print(f"  Running Phylo Tree command: {' '.join(phylo_cmd)}", file=sys.stderr)

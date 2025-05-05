@@ -58,8 +58,8 @@ def main():
                         help="Path to the reference k-mer file (default: /Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/).")
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
     parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
-    parser.add_argument("--min_overlap", type=int, default=100, help="Minimum overlap for bbmerge.")
-    parser.add_argument("--min_count", type=int, default=15, help="Minimum count for a sequence to be kept.")
+    parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
+    parser.add_argument("--min_count", type=int, default=1, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
     parser.add_argument("--min_final_reads", type=int, default=50, help="Minimum number of filtered reads required to PASS.")
@@ -79,10 +79,10 @@ def main():
         print(f"Error: Temporary directory not found: {args.tmp_dir}", file=sys.stderr)
         sys.exit(1)
 
-    combined_reads_dir = args.working_dir / "combined_reads"
+    combined_reads_dir = args.tmp_dir
     fasta_dir = args.working_dir / "HCV_fasta"
     kmers_dir = args.working_dir / "HCV_Kmers"
-    combined_reads_dir.mkdir(parents=True, exist_ok=True)
+    #combined_reads_dir.mkdir(parents=True, exist_ok=True)
     fasta_dir.mkdir(parents=True, exist_ok=True)
     kmers_dir.mkdir(parents=True, exist_ok=True)
 
