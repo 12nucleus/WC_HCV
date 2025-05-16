@@ -179,7 +179,7 @@ def main():
     parser.add_argument("--distancer_script", type=str, default="HCV_kmers_distancer_V0_1.py", help="Name of the kmer distancer script.")
     parser.add_argument("--transmission_script", type=str, default="HCV_transmission_test_V0_2.py", help="Name of the transmission test script.")
     parser.add_argument("--r1_pattern", type=str, default="*_R1_001.fastq.gz", help="Glob pattern for R1 files.")
-    parser.add_argument("--kmer_overlap_threshold", type=float, default=0.05, help="Threshold for k-mer overlap ratio to trigger transmission test.")
+    parser.add_argument("--kmer_overlap_threshold", type=float, default=0.005, help="Threshold for k-mer overlap ratio to trigger transmission test.")
     parser.add_argument("--snp_dists_path", type=str, default="snp-dists", help="Path to the snp-dists executable.")
     parser.add_argument("--mafft_path", type=str, default="mafft", help="Path to the mafft executable.") # Added MAFFT path
     parser.add_argument("--rscript_path", type=str, default="Rscript", help="Path to the Rscript executable.")
@@ -508,10 +508,12 @@ def main():
                 print(f"  Running Docker MAFFT command: {' '.join(mafft_docker_cmd)}", file=sys.stderr)
                 try:
                     # Run Docker command, capture stdout (alignment)
-                    mafft_process = subprocess.run(mafft_docker_cmd, check=True, text=True, capture_output=True)
+                    mafft_process_raw = subprocess.run(mafft_docker_cmd, check=True, text=True, capture_output=True)
+                    mafft_process = mafft_process_raw.stdout.replace('_R_', '')
                     # Write captured stdout to the aligned fasta file
                     with open(aligned_fasta_path, 'w') as f_aligned_out:
-                        f_aligned_out.write(mafft_process.stdout)
+                        f_aligned_out.write(mafft_process)
+
                     print(f"  MAFFT alignment complete: {aligned_fasta_path}", file=sys.stderr)
                 except FileNotFoundError:
                      print(f"  Error: MAFFT executable not found at {args.mafft_path}. Skipping group {group_name}.", file=sys.stderr)

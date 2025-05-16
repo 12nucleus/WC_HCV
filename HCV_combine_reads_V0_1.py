@@ -59,10 +59,10 @@ def main():
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
     parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
     parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
-    parser.add_argument("--min_count", type=int, default=1, help="Minimum count for a sequence to be kept.")
+    parser.add_argument("--min_count", type=int, default=5, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
-    parser.add_argument("--min_final_reads", type=int, default=50, help="Minimum number of filtered reads required to PASS.")
+    parser.add_argument("--min_final_reads", type=int, default=5, help="Minimum number of filtered reads required to PASS.")
     parser.add_argument("--keep_tmp", action='store_true', help="Keep temporary files.")
     parser.add_argument("--keep_unmerged", action='store_true', help="Keep the unmerged R1 and R2 reads from bbmerge.")
 
