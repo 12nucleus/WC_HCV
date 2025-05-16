@@ -13,6 +13,7 @@ import colorsys
 import hashlib
 import io
 import base64
+import re # Import regex module
 
 matplotlib.use('Agg')
 target_sample=""
@@ -81,11 +82,27 @@ def build_eburst_mst(samples, dist_matrix):
                     idx1 = sample_to_idx[sample1]
                     idx2 = sample_to_idx[sample2]
                     distances.append(dist_matrix[idx1][idx2])
-            avg_dist = sum(distances) / len(distances)
-           
-            G.add_edge(i, j, weight=avg_dist)
+            if distances: # Avoid division by zero if a cluster is somehow empty (shouldn't happen with current logic)
+                avg_dist = sum(distances) / len(distances)
+                G.add_edge(i, j, weight=avg_dist)
     
-    mst = nx.minimum_spanning_tree(G)
+    # Handle case where G might be empty or disconnected
+    if not G.nodes():
+        return nx.Graph(), {} # Return empty graph and clusters if no nodes were added
+        
+    # Compute MST - handle potential errors if graph is not connected
+    try:
+        mst = nx.minimum_spanning_tree(G)
+    except nx.NetworkXNoCycle:
+        # If no cycles, the graph itself is a forest (or disconnected nodes)
+        # The MST is the graph itself in this case
+        mst = G
+    except Exception as e:
+        print(f"Error computing MST: {e}", file=sys.stderr)
+        # Depending on desired behavior, might return empty graph or raise error
+        return nx.Graph(), clusters # Return empty graph but keep clusters
+
+
     return mst, clusters
 
 def save_cluster_info(mst, clusters, filename="clusters.txt"):
@@ -96,10 +113,10 @@ def save_cluster_info(mst, clusters, filename="clusters.txt"):
             for sample in samples:
                 f.write(f"  {sample}\n")
             
-            # Get neighboring clusters and distances
-            neighbors = mst[cluster_id]
+            # Get neighboring clusters and distances in the MST
+            neighbors = mst.adj.get(cluster_id, {}) # Use .adj.get for safety if node not in MST
             if neighbors:
-                f.write("\nNeighboring clusters:\n")
+                f.write("\nNeighboring clusters (in MST):\n")
                 for neighbor, edge_data in neighbors.items():
                     distance = edge_data['weight']
                     f.write(f"  Node {neighbor}: {distance:.0f} SNPs\n")
@@ -107,8 +124,10 @@ def save_cluster_info(mst, clusters, filename="clusters.txt"):
 
 def generate_gradient_color(index, total):
     """Generate a color gradient from light gray -> dark blue -> dark red -> light orange."""
+    if total == 0: # Handle case with no unique sample types
+        return '#CCCCCC' # Default gray
     if total == 1:
-        return '#0000FF'  # Dark blue for single sample
+        return '#0000FF'  # Dark blue for single sample type
     
     # Define color stops
     colors = [
@@ -141,14 +160,16 @@ def generate_gradient_color(index, total):
 def create_pie_chart_node(sample_counts, sample_colors, node_id, node_size=50):
     """Create a pie chart for a node with multiple sample types and return as base64 encoded image."""
     # Create figure with transparent background
-    fig, ax = plt.subplots(figsize=(1, 1), dpi=100)
+    fig, ax = plt.subplots(figsize=(1, 1), dpi=200)
     fig.patch.set_alpha(0.0)
     ax.set_aspect('equal')
     
     # Get sample types and their counts
     labels = list(sample_counts.keys())
     sizes = list(sample_counts.values())
-    colors = [sample_colors[label] for label in labels]
+    
+    # Ensure colors match the labels from sample_counts
+    colors = [sample_colors.get(label, '#CCCCCC') for label in labels] # Use .get with default for safety
     
     # Create pie chart
     ax.pie(sizes, colors=colors, startangle=90, wedgeprops={'edgecolor': 'black', 'linewidth': 0.5})
@@ -167,109 +188,107 @@ def create_pie_chart_node(sample_counts, sample_colors, node_id, node_size=50):
 
 def parse_sample_name(sample_string):
     """
-    Parses a sample name string to extract base name and sample type,
-    handling potential _R_ prefixes and names without underscores.
-    Returns (base_name, sample_type).
+    Parses a sample name string to extract the base sample name (e.g., GP0101, 1700046311).
+    Assumes _R_ prefix is already removed.
+    Returns the base_name.
     """
-    original_name = sample_string
-    # Remove _R_ prefix if present
-    if original_name.startswith('_R_'):
-        processed_name = original_name[3:]
-    else:
-        processed_name = original_name
+    # Look for a part starting with "GP" followed by digits
+    gp_match = re.search(r'(GP\d+)', sample_string)
+    if gp_match:
+        return gp_match.group(1)
 
-    parts = processed_name.split('_', 1) # Split only on the first underscore
+    # Look for a sequence of digits that might represent an ID (e.g., 1700046311)
+    # This is a heuristic and might need adjustment based on actual data
+    numeric_matches = re.findall(r'\d+', sample_string)
+    if numeric_matches:
+        # Prioritize longer numeric sequences as potential IDs
+        numeric_matches.sort(key=len, reverse=True)
+        # Consider the longest numeric sequence as the base name if it's reasonably long
+        if numeric_matches[0] and len(numeric_matches[0]) > 5: # Heuristic: > 5 digits
+             return numeric_matches[0]
 
-    if len(parts) > 1:
-        base_name = parts[0]
-        sample_type = parts[1]
-    else:
-        # No underscore found, use the whole name for both
-        base_name = processed_name
-        sample_type = processed_name
-
-    return base_name, sample_type
+    # Fallback: if no clear pattern matched, use the whole string
+    # print(f"Warning: Could not reliably parse base name from '{sample_string}'. Using full name.", file=sys.stderr) # Debugging line
+    return sample_string
 
 
 def plot_interactive_mst(mst, clusters, output_file):
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black")
     
-    # Track unique sample types for coloring
-    sample_types_for_coloring = set()
+    # Track unique base sample names for coloring
+    base_sample_names_for_coloring = set()
     
-    # First pass - collect all unique sample types for coloring
+    # First pass - collect all unique base sample names for coloring
     for node in mst.nodes():
-        samples = clusters[node]
+        samples = clusters.get(node, [])
         for sample in samples:
-            base_name, sample_type = parse_sample_name(sample)
-            sample_types_for_coloring.add(sample_type)
+            base_name = parse_sample_name(sample) # Use the revised parse_sample_name
+            base_sample_names_for_coloring.add(base_name)
     
-    # Create color mapping based on unique sample types
-    sample_types_list = sorted(list(sample_types_for_coloring))
+    # Create color mapping based on unique base sample names
+    base_sample_names_list = sorted(list(base_sample_names_for_coloring))
     sample_colors = {
-        sample_type: generate_gradient_color(i, len(sample_types_list))
-        for i, sample_type in enumerate(sample_types_list)
+        base_name: generate_gradient_color(i, len(base_sample_names_list))
+        for i, base_name in enumerate(base_sample_names_list)
     }
     
-    # Add nodes
+    # Calculate degrees in the MST
+    degrees = dict(mst.degree())
+
+    # Add nodes - Filter nodes with degree <= 1
+    visible_nodes = set()
     for node in mst.nodes():
-        samples = clusters[node]
-        sample_counts_by_type = {} # Count occurrences of each sample type
-        unique_base_sample_names = set() # Track unique base sample names for filtering
+        # --- Filtering: Only add nodes with degree > 1 in the MST ---
+        if degrees.get(node, 0) <= 1:
+            # print(f"Skipping cluster {node} with degree {degrees.get(node, 0)}.", file=sys.stderr) # Debugging line
+            continue
+
+        samples = clusters.get(node, [])
+        base_name_counts = {} # Count occurrences of each base sample name
         
         for sample in samples:
-            base_name, sample_type = parse_sample_name(sample)
+            base_name = parse_sample_name(sample) # Use the revised parse_sample_name
             
-            # Count sample types for pie chart
-            sample_counts_by_type[sample_type] = sample_counts_by_type.get(sample_type, 0) + 1
-            
-            # Collect unique base names for filtering
-            unique_base_sample_names.add(base_name)
+            # Count base sample names for pie chart
+            base_name_counts[base_name] = base_name_counts.get(base_name, 0) + 1
         
-        # --- Filtering: Skip clusters with less than 2 unique base sample names ---
-        if len(unique_base_sample_names) < 2:
-            print(f"Skipping cluster {node} with {len(unique_base_sample_names)} unique sample(s).", file=sys.stderr)
-            continue # Skip adding this node and its edges
-
         node_size = 10 * len(samples) # Node size based on total samples in cluster
         
-        # Determine node color or create pie chart based on sample types
-        if len(sample_counts_by_type) <= 1 or sum(sample_counts_by_type.values()) == 0:
-            # Single sample type or no valid samples - use solid color
-            if sample_counts_by_type:
-                # Use the dominant sample type for color
-                dominant_sample_type = list(sample_counts_by_type.keys())[0] # Only one key if <= 1
-                node_color = sample_colors.get(dominant_sample_type, '#CCCCCC') # Default to gray if not in color map
+        # Determine node color or create pie chart based on base sample names
+        if len(base_name_counts) <= 1 or sum(base_name_counts.values()) == 0:
+            # Single base sample name type or no valid samples - use solid color
+            if base_name_counts:
+                dominant_base_name = list(base_name_counts.keys())[0]
+                node_color = sample_colors.get(dominant_base_name, '#CCCCCC')
             else:
-                node_color = '#CCCCCC'  # Gray for invalid samples
+                node_color = '#CCCCCC'
                 
             net.add_node(
                 node,
                 label=f"Node {node}\n({len(samples)} samples)",
-                title="\n".join(samples), # Keep original sample names in title for debug
+                title="\n".join(samples), # Keep original sample names in title
                 size=node_size,
                 color=node_color
             )
         else:
-            # Multiple sample types - use pie chart
-            pie_chart_data = create_pie_chart_node(sample_counts_by_type, sample_colors, node, node_size)
+            # Multiple base sample names - use pie chart
+            pie_chart_data = create_pie_chart_node(base_name_counts, sample_colors, node, node_size)
             
-            # Create node with pie chart image
             net.add_node(
                 node,
                 label=f"Node {node}\n({len(samples)} samples)",
-                title="\n".join(samples), # Keep original sample names in title for debug
+                title="\n".join(samples), # Keep original sample names in title
                 size=node_size,
                 shape="image",
                 image=pie_chart_data,
-                sampleCount=len(samples) # This is total samples, not unique base names
+                sampleCount=len(samples)
             )
+        visible_nodes.add(node)
     
-    # Add edges - MODIFIED: Only add edges with weight <= 9
-    # Edges connected to skipped nodes will not be added by pyvis automatically
+    # Add edges - Filter edges connected to nodes with degree <= 1 AND edges with weight > 9
     for (u, v, d) in mst.edges(data=True):
-        # Only add edges with weight <= 9 (SNP distance)
-        if d['weight'] <= 9:
+        # Only add edges if both connected nodes are visible AND weight <= 9
+        if u in visible_nodes and v in visible_nodes and d['weight'] <= 9:
             net.add_edge(
                 u, v,
                 label=f"{d['weight']:.0f}",
@@ -294,28 +313,29 @@ def plot_interactive_mst(mst, clusters, output_file):
     
     net.set_options(json.dumps(physics_config))
     
-    # Create legend HTML for sample types
+    # Create legend HTML for sample types (now base sample names)
     legend_html = """
     <div style="position: fixed; top: 10px; right: 10px; background: white;
                 padding: 10px; border: 1px solid black; border-radius: 5px; z-index: 1000;">
-        <h3 style="margin-top: 0;">Sample Types</h3>
+        <h3 style="margin-top: 0;">Base Sample Names</h3>
         <ul style="list-style-type: none; padding: 0; margin: 0;">
     """
     
-    # Add entries for each sample type
-    for sample_name, color in sorted(sample_colors.items()):
+    # Add entries for each base sample name
+    for base_name, color in sorted(sample_colors.items()):
         legend_html += f"""
             <li style="margin: 5px; display: flex; align-items: center;">
                 <span style="display: inline-block; width: 20px; height: 20px;
                       background-color: {color}; margin-right: 5px; border: 1px solid black;"></span>
-                {sample_name}
+                {base_name}
             </li>
         """
     
     legend_html += """
         </ul>
         <div style="margin-top: 10px; font-style: italic;">
-            Note: Only showing edges with ≤9 SNPs distance
+            Note: Only showing edges with ≤9 SNPs distance<br>
+            Only showing nodes with >1 connection in MST
         </div>
     </div>
     """
@@ -465,7 +485,7 @@ def plot_interactive_mst(mst, clusters, output_file):
     }
     
     
-
+    
     function updatePhysics(param, value) {
         console.log("Inside updatePhysics function for param:", param, "value:", value);
         if (!window.network) {
@@ -524,11 +544,11 @@ def plot_interactive_mst(mst, clusters, output_file):
         try {
             initializeControls();
             
-            // Add toggle button handler
-            document.getElementById('toggleSingleBtn').addEventListener('click', function() {
-                console.log("Toggle button clicked");
-                toggleSingleSamples.call(this);
-            });
+            // Add toggle button handler (if you add one later)
+            // document.getElementById('toggleSingleBtn').addEventListener('click', function() {
+            //     console.log("Toggle button clicked");
+            //     toggleSingleSamples.call(this);
+            // });
             
             // Add physics control handlers
             ['gravity','springLength','springConstant'].forEach(function(param) {
@@ -581,8 +601,8 @@ def plot_interactive_mst(mst, clusters, output_file):
     # Update the drawGraph function to export network to window object
     content = content.replace('return network;', 'window.network = network;\nreturn network;')
     
-    # Add jsPDF library for PDF export
-    content = content.replace('<head>', '<head>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>')
+    # Add jsPDF library for PDF export (already present, but ensure it's not duplicated)
+    # content = content.replace('<head>', '<head>\n<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>')
     
     with open(output_file, 'w') as f:
         f.write(content)

@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--min_count", type=int, default=5, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
-    parser.add_argument("--min_final_reads", type=int, default=5, help="Minimum number of filtered reads required to PASS.")
+    parser.add_argument("--min_final_reads", type=int, default=10, help="Minimum number of filtered reads required to PASS.")
     parser.add_argument("--keep_tmp", action='store_true', help="Keep temporary files.")
     parser.add_argument("--keep_unmerged", action='store_true', help="Keep the unmerged R1 and R2 reads from bbmerge.")
 
