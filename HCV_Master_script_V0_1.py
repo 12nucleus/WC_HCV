@@ -67,14 +67,14 @@ def find_clusters(linked_pairs: set) -> list[set]:
 def get_base_sample_name(full_seq_name: str) -> str | None:
     """Extracts the base sample name (e.g., 1700046311) from a full sequence name (e.g., _R_158_1700046311_1)."""
     parts = full_seq_name.split('_')
-    
+
     # Handle _R_* prefixed names (e.g., _R_158_1700046311_1)
     if len(parts) >= 3 and parts[0] == '' and parts[1] == 'R' and parts[2].isdigit():
         # The sample ID is the part before the last underscore
         base_name = parts[-2] if len(parts) > 3 else full_seq_name
         if base_name.isdigit():  # Ensure it's a numeric sample ID
             return base_name
-    
+
     # Original handling for other formats
     if len(parts) >= 2:
         if parts[0].isdigit() and parts[-1].isdigit() and len(parts) >= 3:
@@ -83,9 +83,72 @@ def get_base_sample_name(full_seq_name: str) -> str | None:
             return parts[0]
         if len(parts) > 1 and parts[1].startswith("GP"):
             return parts[1]
-    
+
     print(f"Warning: Could not reliably parse base name from '{full_seq_name}'. Using full name.", file=sys.stderr)
     return full_seq_name
+
+def calculate_shared_haplotype_percentage(fasta1_path: Path, fasta2_path: Path) -> float:
+    """
+    Calculates the percentage of shared haplotypes (100% identical sequences)
+    between two gzipped FASTA files, weighted by haplotype counts in headers.
+    """
+    try:
+        # Load sequences and counts from fasta1
+        sequences1 = {}
+        total_count1 = 0
+        with gzip.open(fasta1_path, "rt") as f1:
+            for record in SeqIO.parse(f1, "fasta"):
+                header_parts = record.id.split('_')
+                try:
+                    # Assuming the last part is the count
+                    count = int(header_parts[-1])
+                    sequences1[str(record.seq)] = count
+                    total_count1 += count
+                except (IndexError, ValueError):
+                    print(f"Warning: Could not parse count from header: {record.id}", file=sys.stderr)
+                    # If count cannot be parsed, treat as count of 1
+                    sequences1[str(record.seq)] = 1
+                    total_count1 += 1
+
+        # Load sequences and counts from fasta2 and find shared
+        shared_count = 0
+        total_count2 = 0
+        with gzip.open(fasta2_path, "rt") as f2:
+            for record in SeqIO.parse(f2, "fasta"):
+                header_parts = record.id.split('_')
+                try:
+                    count = int(header_parts[-1])
+                    total_count2 += count
+                    if str(record.seq) in sequences1:
+                        # Add the count from both samples for this shared haplotype
+                        shared_count += count + sequences1[str(record.seq)]
+                except (IndexError, ValueError):
+                    print(f"Warning: Could not parse count from header: {record.id}", file=sys.stderr)
+                    # If count cannot be parsed, treat as count of 1
+                    total_count2 += 1
+                    if str(record.seq) in sequences1:
+                         shared_count += 1 + sequences1.get(str(record.seq), 0) # Add 1 for this sample, and the count from sample1 if found
+
+
+        # Calculate percentage based on the total counts of both samples involved in the link
+        # The user's description "divided by the total number of haplotype in that sample"
+        # is slightly ambiguous for a pair. A reasonable interpretation is the total count
+        # of all sequences in *both* samples involved in the link.
+        # Let's calculate the percentage relative to the sum of total counts of the two samples.
+        combined_total_count = total_count1 + total_count2
+        if combined_total_count > 0:
+            percentage = (shared_count / combined_total_count) * 100
+        else:
+            percentage = 0.0
+
+        return percentage
+
+    except FileNotFoundError as e:
+        print(f"Error calculating shared haplotype percentage: File not found - {e}", file=sys.stderr)
+        return 0.0
+    except Exception as e:
+        print(f"Error calculating shared haplotype percentage: {e}", file=sys.stderr)
+        return 0.0
 
 
 def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, set[str]], dict[str, str], int, set[tuple[str, str]]]:
@@ -428,7 +491,6 @@ def main():
 
 
 
-
     # --- Step 2.5: SNP Distance Confirmation via Group Alignment ---
     print("\n--- Running Step 2.5: SNP Distance Confirmation via Group Alignment ---", file=sys.stderr)
     newly_linked_pairs_this_run.clear() # Ensure it's empty before populating
@@ -526,7 +588,7 @@ def main():
                 # 3. Run snp-dists on the aligned FASTA
                 print(f"  Running snp-dists on aligned FASTA...", file=sys.stderr)
                 # snp-dists needs the output file specified with -o
-                snp_command = [args.snp_dists_path, "-m", str(aligned_fasta_path)] # Use -m for molten format, output goes to stdout
+                snp_command = [args.snp_dists_path, "-m", "-a", str(aligned_fasta_path)] # Use -m for molten format, output goes to stdout
                 try:
                     # Run snp-dists, capture stdout
                     snp_process = subprocess.run(snp_command, check=False, text=True, capture_output=True) # Use check=False to handle errors manually
@@ -548,7 +610,7 @@ def main():
                     # Also generate the square matrix needed for plotting
                     square_matrix_path = group_run_temp_dir / f"{group_name}_snp_distances_square.tsv"
                     
-                    snp_square_command = [args.snp_dists_path, "-b", str(aligned_fasta_path)] # Default square format to stdout
+                    snp_square_command = [args.snp_dists_path, "-b", "-a", str(aligned_fasta_path)] # Default square format to stdout
                     try:
                          snp_square_process = subprocess.run(snp_square_command, check=False, text=True, capture_output=True)
                          if snp_square_process.returncode == 0:
@@ -582,47 +644,51 @@ def main():
                     with open(distance_matrix_path, 'r') as f_dist:
                         reader = csv.reader(f_dist, delimiter='\t')
                         
-                        # Skip header if present (snp-dists -m might not have one, adjust if needed)
-                        # header = next(reader)
+                        # New data structure to store all sequence-level distances
+                        # Key: tuple of sorted base sample names, Value: list of distances
+                        all_sequence_pair_distances = defaultdict(list)
+
                         for row in reader:
                             if len(row) == 3:
                                 s1_full, s2_full, distance_str = row
-                                # Get base names
                                 s1_base = get_base_sample_name(s1_full)
                                 s2_base = get_base_sample_name(s2_full)
 
-                                # Ensure we got base names and both original full names were part of the valid group
-                                # (We check valid_samples_in_group earlier, this ensures parsing worked)
-                                if s1_base and s2_base:
+                                if s1_base and s2_base and s1_base != s2_base: # Only consider inter-sample distances
                                     try:
                                         distance = int(float(distance_str))
-                                        if distance <= 9:
-                                            # Use BASE names for the confirmed pair set
-                                            confirmed_pair_base = tuple(sorted((s1_base, s2_base)))
-                                            # Add confirmed pair (using base names) only once
-                                            if confirmed_pair_base not in newly_linked_pairs_this_run:
-                                                 # Print with base names for clarity
-                                                 print(f"    -> Link confirmed: {s1_base} <-> {s2_base} (SNP Distance: {distance})", file=sys.stderr)
-                                                 newly_linked_pairs_this_run.add(confirmed_pair_base)
-                                                 snp_confirmed_links_count += 1
-                                                 # Add base names to the combined set of all links
-                                                 all_linked_pairs.add(confirmed_pair_base)
-
-                                                 # Store SNP distance for reporting
-                                                 if s1_base != s2_base: # Avoid reporting distance to self
-                                                     sample_snp_distances[s1_base].append((s2_base, distance))
-                                                     sample_snp_distances[s2_base].append((s1_base, distance))
-
+                                        # Store the distance for later minimum calculation
+                                        all_sequence_pair_distances[tuple(sorted((s1_base, s2_base)))].append(distance)
                                     except ValueError:
                                         print(f"    Warning: Could not parse distance value '{distance_str}' for pair ({s1_full}, {s2_full})", file=sys.stderr)
-                                else:
-                                     print(f"    Warning: Could not get base names for pair ({s1_full}, {s2_full}). Skipping distance check.", file=sys.stderr)
-
-                            # Optionally handle header line if snp-dists -m includes one
-                            elif len(row) > 0 and row[0].lower() == 'sample1': # Example header check
-                                 print(f"    Skipping header row: {row}", file=sys.stderr)
-                            elif row: # Handle other unexpected lines
+                                #else:
+                                #     print(f"    Warning: Skipping malformed or intra-sample line in distance file: {row}", file=sys.stderr)
+                                #     print(f"  Error: Malformed line in distance file: {row} x {distance_matrix_path}", file=sys.stderr)
+                            elif row:
                                  print(f"    Warning: Skipping malformed line in distance file: {row}", file=sys.stderr)
+
+                    # After parsing all rows, determine the minimum SNP distance for each sample pair
+                    for (s1_base, s2_base), distances_list in all_sequence_pair_distances.items():
+                        if distances_list:
+                            min_sample_distance = min(distances_list)
+                            
+                            # Now apply the threshold and add to confirmed links
+                            if min_sample_distance <= 9:
+                                confirmed_pair_base = tuple(sorted((s1_base, s2_base)))
+                                if confirmed_pair_base not in newly_linked_pairs_this_run:
+                                    print(f"    -> Link confirmed: {s1_base} <-> {s2_base} (SNP Distance: {min_sample_distance})", file=sys.stderr)
+                                    newly_linked_pairs_this_run.add(confirmed_pair_base)
+                                    snp_confirmed_links_count += 1
+                                    all_linked_pairs.add(confirmed_pair_base)
+
+                                    # Calculate shared haplotype percentage (still needed for reporting)
+                                    fasta1_path = fasta_dir / f"{s1_base}.fasta.gz"
+                                    fasta2_path = fasta_dir / f"{s2_base}.fasta.gz"
+                                    shared_haplotype_percent = calculate_shared_haplotype_percentage(fasta1_path, fasta2_path)
+
+                                    # Store SNP distance and shared haplotype percentage for reporting
+                                    sample_snp_distances[s1_base].append((s2_base, min_sample_distance, shared_haplotype_percent))
+                                    sample_snp_distances[s2_base].append((s1_base, min_sample_distance, shared_haplotype_percent))
 
                 except FileNotFoundError:
                      print(f"  Error: Distance matrix file not found at {distance_matrix_path}. Cannot confirm links.", file=sys.stderr)
@@ -881,201 +947,14 @@ def main():
                 # Write the collected status/link lines first
                 f_report.write("\n".join(temp_sample_lines[sample]) + "\n")
 
-                # Determine cluster status based on events and final mapping
-                cluster_status_reported = False
-                if sample in report_events:
-                    # Prioritize reporting specific events like merges, additions, new formations
-                    merge_event = next((e for e in report_events[sample] if "caused merge" in e), None)
-                    added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
-                    formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
-
-                    final_cluster_name = final_sample_to_cluster_map.get(sample)
-                    if not final_cluster_name: # Should not happen if event occurred, but safety check
-                         f_report.write(f"\n{sample} involved in cluster event, but final cluster unknown.\n")
-                         cluster_status_reported = True
-                    else:
-                         members = sorted(list(current_clusters.get(final_cluster_name, set())))
-                         members_str = ", ".join(members)
-
-                         if merge_event:
-                              # Extract the original clusters if possible (complex, using simpler message for now)
-                              # Example: "GP00092 involved in merge resulting in Cluster_1 -> GP00092, GP00093, ..."
-                              f_report.write(f"\n{sample} involved in merge resulting in {final_cluster_name} -> {members_str}\n")
-                              cluster_status_reported = True
-                         elif added_event:
-                              # Example: "GP00092 added to cluster Cluster_1 -> GP00092, GP00093, ..."
-                              f_report.write(f"\n{sample} added to {final_cluster_name} -> {members_str}\n")
-                              cluster_status_reported = True
-                         elif formed_event:
-                              # Example: "GP00092 formed new cluster Cluster_3 -> GP00092, GP00101"
-                              f_report.write(f"\n{sample} formed new {final_cluster_name} -> {members_str}\n")
-                              cluster_status_reported = True
-                         # If only "linked within" events, treat as "already part of" below
-
-                # If no specific event reported, check if it's just part of a cluster
-                if not cluster_status_reported and sample in final_sample_to_cluster_map:
-                    cluster_name = final_sample_to_cluster_map[sample]
-                    members = sorted(list(current_clusters.get(cluster_name, set())))
-                    members_str = ", ".join(members)
-                    # Check if it was already in that cluster initially
-                    if sample in initial_sample_to_cluster and initial_sample_to_cluster[sample] == cluster_name:
-                         f_report.write(f"\n{sample} already part of {cluster_name} -> {members_str}\n")
-                         cluster_status_reported = True
-                    else:
-                         # This case might occur if a sample was part of a cluster that got merged *into* this one,
-                         # but the sample itself didn't trigger the merge link. Report as "part of".
-                         f_report.write(f"\n{sample} part of final {cluster_name} -> {members_str}\n")
-                         cluster_status_reported = True
-
-
-                # If still no cluster status reported, check for failure/no links based on buffered lines
-                if not cluster_status_reported:
-                     buffered_lines = "\n".join(temp_sample_lines[sample])
-                     if "Links found: No" in buffered_lines or "Status: Kmer Analysis SKIPPED" in buffered_lines or "FAILED" in buffered_lines:
-                          f_report.write(f"\n{sample} has no links and is not part of any cluster.\n")
-                          cluster_status_reported = True
-                     # else: # Sample processed but somehow didn't end up in a cluster or have an event?
-                     #      f_report.write(f"\n{sample} - final cluster status undetermined.\n")
-
-
-                # Add separator
-                f_report.write("\n=================================================\n\n")
-
-            # Add entries for any processed samples missed by the loop (e.g., failed very early)
-            all_processed_samples = set(sample_temp_dirs.keys()) # Get all samples attempted
-            missed_samples = all_processed_samples - processed_samples_in_report
-            for sample in sorted(list(missed_samples)):
-                 f_report.write(f"--- Sample: {sample} ---\n\n")
-                 # Try to find a status line for it in the original run_report_lines
-                 status_line = next((line for line in run_report_lines if sample in line and ("FAILED" in line or "SKIPPED" in line)), None)
-                 if status_line:
-                      f_report.write(status_line.strip() + "\n")
-                 else:
-                      f_report.write(f"Status: Processing details incomplete (check individual report: {reports_dir / f'{sample}_report.out'}).\n")
-                 f_report.write(f"\n{sample} has no links and is not part of any cluster.\n")
-                 f_report.write("\n=================================================\n\n")
-
-            # Remove final blank line added by loop
-            f_report.seek(f_report.tell() - 2)
-            f_report.truncate()
-
-        # This block is now outside the 'with open' but inside the 'try'
-        print(f"Run report saved to: {run_report_file}", file=sys.stderr)
-        files_to_send.append(run_report_file)
-    except IOError as e:
-        print(f"Error writing run report file {run_report_file}: {e}", file=sys.stderr)
-
-
-    # --- Step 3c: Append Clustering Summary to Individual Reports ---
-    print("\n--- Running Step 3c: Appending Cluster Summary to Sample Reports ---", file=sys.stderr)
-    final_clusters_after_update = {k: v for k, v in current_clusters.items() if k not in clusters_to_delete}
-
-    for sample in processed_samples: # Iterate through samples processed in this run
-        report_file = reports_dir / f"{sample}_report.out"
-        if not report_file.is_file():
-            print(f"  Warning: Report file for {sample} not found at {report_file}. Cannot append cluster summary.", file=sys.stderr)
-            continue
-
-        try:
-            with open(report_file, 'a') as f_out:
-                f_out.write("\n--- SNP Clustering Analysis ---\n")
-
-                final_cluster_name = final_sample_to_cluster_map.get(sample)
-
-                if not final_cluster_name:
-                    f_out.write("No SNP link found, not part of a cluster.\n")
-                else:
-                    # Ensure the final cluster name reflects any merges
-                    while final_cluster_name in merged_cluster_log:
-                         final_cluster_name = merged_cluster_log[final_cluster_name]
-
-                    final_members = sorted(list(final_clusters_after_update.get(final_cluster_name, set())))
-                    final_members_str = ", ".join(final_members)
-
-                    # Check for specific events recorded during clustering update
-                    event_found = False
-                    if sample in report_events:
-                        # Check for merge event first as it's more specific
-                        merge_event_details = next((e for e in report_events[sample] if "caused merge" in e), None)
-                        if merge_event_details:
-                             # Extract original cluster names if possible (might be complex depending on report_events format)
-                             # Simplified message:
-                             f_out.write(f"SNP link found, Involved in merge resulting in {final_cluster_name} -> {final_members_str}\n")
-                             event_found = True
-                        else:
-                            added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
-                            formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
-
-                            if formed_event:
-                                f_out.write(f"SNP link found, New cluster created {final_cluster_name} -> {final_members_str}\n")
-                                event_found = True
-                            elif added_event:
-                                f_out.write(f"SNP link found, Added to existing {final_cluster_name} -> {final_members_str}\n")
-                                event_found = True
-
-                    # If no specific event, determine if it was already there or joined passively
-                    if not event_found:
-                         initial_cluster = initial_sample_to_cluster.get(sample)
-                         # Adjust initial cluster if it was merged
-                         while initial_cluster in merged_cluster_log:
-                              initial_cluster = merged_cluster_log[initial_cluster]
-
-                         if initial_cluster == final_cluster_name:
-                              f_out.write(f"SNP link found within existing {final_cluster_name} -> {final_members_str}\n")
-                         else:
-                              # Sample ended up in the cluster, likely due to other links causing merges/additions
-                              f_out.write(f"SNP link found, Now part of {final_cluster_name} -> {final_members_str}\n")
-
-        except IOError as e:
-            print(f"  Error appending cluster summary to {report_file}: {e}", file=sys.stderr)
-        except Exception as e:
-             print(f"  Unexpected error appending cluster summary for {sample}: {e}", file=sys.stderr)
-
-
-    # --- Generate Run Report ---
-    print("\n--- Generating Run Report ---", file=sys.stderr)
-    run_report_file = reports_dir / f"Run_Report_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt" # Added timestamp to avoid overwrites
-    try:
-        with open(run_report_file, 'w') as f_report:
-            f_report.write(f"Master Pipeline Run Report - {datetime.datetime.now()}\n")
-            f_report.write("="*40 + "\n")
-            f_report.write("Command Line Arguments:\n")
-            f_report.write(f"  Reads Directory: {args.reads_dir}\n")
-            f_report.write(f"  Base Directory: {args.base_dir}\n")
-            f_report.write(f"  Keep Temp Dirs: {args.keep_tmp}\n")
-            f_report.write(f"  Keep Unmerged Reads: {args.keep_unmerged}\n")
-            f_report.write(f"  SNP Distance Threshold: <= 9\n") # Hardcoded based on logic
-            f_report.write(f"  Kmer Overlap Threshold: {args.kmer_overlap_threshold}\n")
-            f_report.write("="*40 + "\n\n")
-            f_report.write("Sample Processing Summary:\n")
-            f_report.write("-" * 30 + "\n")
-            # Use a structured approach for sample reporting
-            processed_samples_in_report = set()
-            sample_order = []
-            temp_sample_lines = defaultdict(list)
-            current_processing_sample = None
-            for line in run_report_lines:
-                 if line.startswith("--- Sample:"):
-                      current_processing_sample = line.split(":")[-1].strip().split(" ")[0]
-                      if current_processing_sample not in sample_order:
-                           sample_order.append(current_processing_sample)
-                      temp_sample_lines[current_processing_sample].append(line) # Add header
-                      temp_sample_lines[current_processing_sample].append("") # Add blank line
-                 elif current_processing_sample:
-                      temp_sample_lines[current_processing_sample].append(line)
-
-            # Write report sample by sample
-            for sample in sample_order:
-                processed_samples_in_report.add(sample)
-                f_report.write("\n".join(temp_sample_lines[sample]) + "\n") # Write buffered lines
-
                 # Add SNP distance details to the report
                 if sample in sample_snp_distances and sample_snp_distances[sample]:
                     f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= 9):\n")
                     # Sort distances for consistent reporting
                     sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
-                    for linked_sample, distance in sorted_distances:
-                        f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance})\n")
+                    for linked_sample, distance, shared_haplotype_percent in sorted_distances:
+                        # Add the shared haplotype percentage to the report line
+                        f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes\n")
                     f_report.write("\n") # Add a blank line after the distances
 
                 # Determine cluster status based on events and final mapping
@@ -1174,8 +1053,8 @@ def main():
                             f_out.write(f"\nMinimum SNP Distances to Other Samples (<= 9):\n")
                             # Sort distances for consistent reporting
                             sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
-                            for linked_sample, distance in sorted_distances:
-                                f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance})\n")
+                            for linked_sample, distance, shared_haplotype_percent in sorted_distances:
+                                f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes\n")
                             f_out.write("\n") # Add a blank line after the distances
                         print(f"  Appended SNP distance details to {report_file}", file=sys.stderr)
                     except IOError as e:
@@ -1200,4 +1079,3 @@ if __name__ == "__main__":
     # Need datetime for timestamp
     # import datetime # Already imported above
     main()
-

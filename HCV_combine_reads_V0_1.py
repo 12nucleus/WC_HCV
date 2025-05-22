@@ -59,12 +59,13 @@ def main():
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
     parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
     parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
-    parser.add_argument("--min_count", type=int, default=5, help="Minimum count for a sequence to be kept.")
+    parser.add_argument("--min_count", type=int, default=10, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
     parser.add_argument("--kmer_size_jf", type=int, default=125, help="K-mer size for jellyfish counting.")
-    parser.add_argument("--min_final_reads", type=int, default=10, help="Minimum number of filtered reads required to PASS.")
+    parser.add_argument("--min_final_reads", type=int, default=5, help="Minimum number of filtered reads required to PASS.")
     parser.add_argument("--keep_tmp", action='store_true', help="Keep temporary files.")
     parser.add_argument("--keep_unmerged", action='store_true', help="Keep the unmerged R1 and R2 reads from bbmerge.")
+    parser.add_argument("--min_len_merged_reads", type=int, default=225, help="min_len_merged_reads")
 
     args = parser.parse_args()
 
@@ -269,7 +270,7 @@ def main():
     print(f"Found {len(seq_counts)} unique sequences from {total_reads_processed} merged reads.", file=sys.stderr)
 
     # --- Filter Sequences ---
-    print(f"Filtering sequences (min_count={args.min_count}, min_kmer_matches={args.min_kmer_matches})...", file=sys.stderr)
+    print(f"Filtering sequences (min_count={args.min_count}, min_len ={args.min_len_merged_reads} min_kmer_matches={args.min_kmer_matches})...", file=sys.stderr)
     filtered_sequences = []
     total_filtered_reads = 0
     rejected_min_representation = 0
@@ -280,7 +281,7 @@ def main():
     #sorted_seqs = sorted(seq_counts.items(), key=lambda item, count: item[1], reverse=True)
     sorted_seqs = sorted(seq_counts.items(), key=lambda item: item[1], reverse=True)
     for seq, count in sorted_seqs:
-        if count >= args.min_count:
+        if count >= args.min_count and len(seq) >= args.min_len_merged_reads:
             match_count = 0
             seq_rc = None # Calculate only if needed
             for ref_kmer in kmer_check:
@@ -319,6 +320,7 @@ def main():
 
         # --- Run Jellyfish in Docker ---
         # Mount working directory and output directory as volumes
+
         docker_cmd = [
             "docker", "run", "--rm", # Remove container after run
             "-v", f"{fasta_dir.resolve()}:/data:ro", # Mount final fasta dir read-only

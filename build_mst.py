@@ -217,14 +217,16 @@ def plot_interactive_mst(mst, clusters, output_file):
     
     # Track unique base sample names for coloring
     base_sample_names_for_coloring = set()
-    
-    # First pass - collect all unique base sample names for coloring
-    for node in mst.nodes():
-        samples = clusters.get(node, [])
-        for sample in samples:
-            base_name = parse_sample_name(sample) # Use the revised parse_sample_name
+    # Also track all unique base sample names to ensure representation
+    all_unique_base_samples = set()
+
+    # First pass - collect all unique base sample names for coloring and for ensuring representation
+    for node_id, samples_in_cluster in clusters.items(): # Iterate through clusters directly
+        for sample in samples_in_cluster:
+            base_name = parse_sample_name(sample)
             base_sample_names_for_coloring.add(base_name)
-    
+            all_unique_base_samples.add(base_name) # Collect all unique base samples
+
     # Create color mapping based on unique base sample names
     base_sample_names_list = sorted(list(base_sample_names_for_coloring))
     sample_colors = {
@@ -235,12 +237,40 @@ def plot_interactive_mst(mst, clusters, output_file):
     # Calculate degrees in the MST
     degrees = dict(mst.degree())
 
-    # Add nodes - Filter nodes with degree <= 1
+    # --- New Logic for ensuring sample representation ---
+    guaranteed_represented_samples = set()
+    nodes_to_force_include = set() # Nodes that must be included to represent a sample
+
+    # First pass: Identify nodes that must be included to represent unrepresented samples
+    # Sort nodes to ensure consistent behavior if multiple nodes could represent the same sample
+    # (e.g., by node ID or number of samples in cluster)
+    sorted_nodes = sorted(mst.nodes(), key=lambda n: len(clusters.get(n, []))) # Sort by number of samples, smaller first
+
+    for node in sorted_nodes:
+        samples_in_node = clusters.get(node, [])
+        node_base_samples = {parse_sample_name(s) for s in samples_in_node}
+        
+        # Check if this node represents any base sample not yet guaranteed
+        newly_represented_samples = node_base_samples - guaranteed_represented_samples
+        
+        if newly_represented_samples:
+            nodes_to_force_include.add(node)
+            guaranteed_represented_samples.update(newly_represented_samples)
+            
+            # Optimization: If all samples are now guaranteed, we can stop this pass
+            if guaranteed_represented_samples == all_unique_base_samples:
+                break
+    # --- End New Logic ---
+
+    # Add nodes - Filter nodes with degree <= 1 OR if not forcefully included
     visible_nodes = set()
     for node in mst.nodes():
-        # --- Filtering: Only add nodes with degree > 1 in the MST ---
-        if degrees.get(node, 0) <= 1:
-            # print(f"Skipping cluster {node} with degree {degrees.get(node, 0)}.", file=sys.stderr) # Debugging line
+        # --- Filtering: Only add nodes with degree > 1 in the MST OR if forcefully included ---
+        if node in nodes_to_force_include:
+            # This node is forcefully included to ensure sample representation
+            pass # Do not apply degree filter
+        elif degrees.get(node, 0) <= my_min_degree:
+            # Original filtering: skip if degree is too low
             continue
 
         samples = clusters.get(node, [])
@@ -608,12 +638,24 @@ def plot_interactive_mst(mst, clusters, output_file):
         f.write(content)
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python build_mst.py <distance_matrix_file> <output_html_file>")
-        sys.exit(1)
+    #if len(sys.argv) < 5:
+        #print("Usage: python build_mst.py <distance_matrix_file> <output_html_file>")
+        #sys.exit(1)
         
     input_file = sys.argv[1]
     output_file = sys.argv[2]
+    global my_min_degree
+    # Check if the third argument is provided, else set default
+    if len(sys.argv) > 3:
+        try:
+            my_min_degree = int(sys.argv[3])
+        except ValueError:
+            print("Invalid minimum degree value. Using default value of 1.")
+            my_min_degree = 1
+    else:
+        print("No minimum degree provided. Using default value of 1.")
+        my_min_degree = 1
+    
     samples, dist_matrix = read_distance_matrix(input_file)
     mst, clusters = build_eburst_mst(samples, dist_matrix)
     save_cluster_info(mst, clusters)
