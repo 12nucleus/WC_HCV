@@ -15,6 +15,8 @@ import io
 import base64
 import re # Import regex module
 
+import argparse # Added for CLI argument parsing
+
 matplotlib.use('Agg')
 target_sample=""
 
@@ -212,7 +214,7 @@ def parse_sample_name(sample_string):
     return sample_string
 
 
-def plot_interactive_mst(mst, clusters, output_file):
+def plot_interactive_mst(mst, clusters, output_file, min_degree):
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black")
     
     # Track unique base sample names for coloring
@@ -638,29 +640,22 @@ def plot_interactive_mst(mst, clusters, output_file):
         f.write(content)
 
 def main():
-    #if len(sys.argv) < 5:
-        #print("Usage: python build_mst.py <distance_matrix_file> <output_html_file>")
-        #sys.exit(1)
-        
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
-    global my_min_degree
-    # Check if the third argument is provided, else set default
-    if len(sys.argv) > 3:
-        try:
-            my_min_degree = int(sys.argv[3])
-        except ValueError:
-            print("Invalid minimum degree value. Using default value of 1.")
-            my_min_degree = 1
-    else:
-        print("No minimum degree provided. Using default value of 1.")
-        my_min_degree = 1
+    parser = argparse.ArgumentParser(description="Builds an interactive Minimum Spanning Tree (MST) visualization from a SNP distance matrix.")
+    parser.add_argument("input_file", type=str, help="Path to the input SNP distance matrix file (TSV format).")
+    parser.add_argument("output_file", type=str, help="Path to the output HTML file for the interactive MST visualization.")
+    parser.add_argument("--min_degree", type=int, default=1,
+                        help="Minimum degree for filtering nodes in the visualization. Nodes with fewer connections than this value will be hidden unless they are required to represent a unique sample type. Default is 1.")
     
-    samples, dist_matrix = read_distance_matrix(input_file)
+    args = parser.parse_args()
+
+    global my_min_degree
+    my_min_degree = args.min_degree # Assign from parsed arguments
+
+    samples, dist_matrix = read_distance_matrix(args.input_file)
     mst, clusters = build_eburst_mst(samples, dist_matrix)
     save_cluster_info(mst, clusters)
-    plot_interactive_mst(mst, clusters, output_file)
-    print(f"MST visualization generated successfully. Open {output_file} in your web browser.")
+    plot_interactive_mst(mst, clusters, args.output_file, my_min_degree)
+    print(f"MST visualization generated successfully. Open {args.output_file} in your web browser.")
 
 if __name__ == "__main__":
     main()

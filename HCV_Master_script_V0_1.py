@@ -87,10 +87,11 @@ def get_base_sample_name(full_seq_name: str) -> str | None:
     print(f"Warning: Could not reliably parse base name from '{full_seq_name}'. Using full name.", file=sys.stderr)
     return full_seq_name
 
-def calculate_shared_haplotype_percentage(fasta1_path: Path, fasta2_path: Path) -> float:
+def _calculate_shared_haplotype_percentage_from_fasta(fasta1_path: Path, fasta2_path: Path) -> float:
     """
     Calculates the percentage of shared haplotypes (100% identical sequences)
     between two gzipped FASTA files, weighted by haplotype counts in headers.
+    This is the old method, kept for reference.
     """
     try:
         # Load sequences and counts from fasta1
@@ -149,6 +150,85 @@ def calculate_shared_haplotype_percentage(fasta1_path: Path, fasta2_path: Path) 
     except Exception as e:
         print(f"Error calculating shared haplotype percentage: {e}", file=sys.stderr)
         return 0.0
+
+def calculate_shared_haplotype_percentage(square_matrix_path: Path, s1_base: str, s2_base: str) -> tuple[float, int, int, float, int, int]:
+    """
+    Calculates the percentage of shared haplotypes (0 SNP distance) between two samples
+    based on a snp-dists square matrix.
+    Returns (percent_s1_to_s2, s1_total_genotypes, s1_shared_genotypes,
+               percent_s2_to_s1, s2_total_genotypes, s2_shared_genotypes).
+    """
+    s1_sequences = defaultdict(list) # {base_sample_name: [full_seq_id1, full_seq_id2, ...]}
+    s2_sequences = defaultdict(list)
+
+    # Read the square matrix and populate sequence lists
+   
+    with open(square_matrix_path, 'r') as f_sq:
+        reader = csv.reader(f_sq, delimiter='\t')
+        header_cols = next(reader) # This is the first row, including the empty string at [0]
+        
+        # Map full sequence IDs to their column index in the data rows
+        # The first element of header_cols is usually empty, so actual sequence IDs start from index 1
+        # We will use this to map column index to sequence ID for populating matrix_data_dict
+        
+        matrix_data_dict = {} # {row_seq_id: {col_seq_id: distance}}
+        for row in reader:
+            row_seq_id = row[0] # First element of each row is the sequence ID
+            matrix_data_dict[row_seq_id] = {}
+            for col_idx, distance_str in enumerate(row[1:]): # Distances start from the second element
+                col_seq_id = header_cols[col_idx + 1] # +1 because header_cols has an empty string at index 0
+                matrix_data_dict[row_seq_id][col_seq_id] = distance_str
+
+        # Populate s1_sequences and s2_sequences
+        
+        # Populate s1_sequences and s2_sequences from the header_cols
+        for full_seq_id in header_cols[1:]: # Skip the first empty element
+            base_name = get_base_sample_name(full_seq_id)
+            if base_name == s1_base:
+                s1_sequences[s1_base].append(full_seq_id)
+            elif base_name == s2_base:
+                s2_sequences[s2_base].append(full_seq_id)
+
+
+
+    # Initialize percentages and counts
+    percent_s1_to_s2 = 0.0
+    s1_total_genotypes = 0
+    s1_shared_genotypes = 0
+    percent_s2_to_s1 = 0.0
+    s2_total_genotypes = 0
+    s2_shared_genotypes = 0
+
+    # Calculate percent_s1_to_s2
+    s1_total_genotypes = len(s1_sequences[s1_base])
+    if s1_total_genotypes > 0:
+        for s1_full_seq_id in s1_sequences[s1_base]:
+            for s2_full_seq_id in s2_sequences[s2_base]:
+                try:
+                    distance = int(float(matrix_data_dict[s1_full_seq_id][s2_full_seq_id]))
+                    if distance == 0:
+                        s1_shared_genotypes += 1
+                        break # Found at least one 0-SNP match for this s1 sequence
+                except (ValueError, IndexError):
+                    print(f"Warning: a Could not parse distance from matrix for ({s1_full_seq_id}, {s2_full_seq_id}). Value: '{matrix_data_dict.get(s1_full_seq_id, {}).get(s2_full_seq_id, 'N/A')}'", file=sys.stderr)
+                    
+
+    percent_s1_to_s2 = (s1_shared_genotypes / s1_total_genotypes) * 100 if s1_total_genotypes > 0 else 0.0
+
+    # Calculate percent_s2_to_s1
+    s2_total_genotypes = len(s2_sequences[s2_base])
+    if s2_total_genotypes > 0:
+        for s2_full_seq_id in s2_sequences[s2_base]:
+            for s1_full_seq_id in s1_sequences[s1_base]:
+                try:
+                    distance = int(float(matrix_data_dict[s2_full_seq_id][s1_full_seq_id]))
+                    if distance == 0:
+                        s2_shared_genotypes += 1
+                        break # Found at least one 0-SNP match for this s2 sequence
+                except (ValueError, IndexError):
+                    print(f"Warning: b Could not parse distance from matrix for ({s2_full_seq_id}, {s1_full_seq_id}). Value: '{matrix_data_dict.get(s2_full_seq_id, {}).get(s1_full_seq_id, 'N/A')}'", file=sys.stderr)
+
+    return percent_s1_to_s2, s1_total_genotypes, s1_shared_genotypes, percent_s2_to_s1, s2_total_genotypes, s2_shared_genotypes
 
 
 def load_existing_clusters(cluster_file_path: Path) -> tuple[dict[str, set[str]], dict[str, str], int, set[tuple[str, str]]]:
@@ -684,11 +764,19 @@ def main():
                                     # Calculate shared haplotype percentage (still needed for reporting)
                                     fasta1_path = fasta_dir / f"{s1_base}.fasta.gz"
                                     fasta2_path = fasta_dir / f"{s2_base}.fasta.gz"
-                                    shared_haplotype_percent = calculate_shared_haplotype_percentage(fasta1_path, fasta2_path)
+                                    # Calculate shared haplotype percentage using the new method
+                                    # The square_matrix_path is available from the group processing
+                                    # Calculate shared haplotype percentage using the new method
+                                    # The square_matrix_path is available from the group processing
+                                    percent_s1_to_s2, s1_total_genotypes, s1_shared_genotypes, \
+                                    percent_s2_to_s1, s2_total_genotypes, s2_shared_genotypes = \
+                                        calculate_shared_haplotype_percentage(square_matrix_path, s1_base, s2_base)
 
                                     # Store SNP distance and shared haplotype percentage for reporting
-                                    sample_snp_distances[s1_base].append((s2_base, min_sample_distance, shared_haplotype_percent))
-                                    sample_snp_distances[s2_base].append((s1_base, min_sample_distance, shared_haplotype_percent))
+                                    # For s1_base, report percentage relative to s1_base's total genotypes
+                                    sample_snp_distances[s1_base].append((s2_base, min_sample_distance, percent_s1_to_s2, s1_shared_genotypes, s1_total_genotypes))
+                                    # For s2_base, report percentage relative to s2_base's total genotypes
+                                    sample_snp_distances[s2_base].append((s1_base, min_sample_distance, percent_s2_to_s1, s2_shared_genotypes, s2_total_genotypes))
 
                 except FileNotFoundError:
                      print(f"  Error: Distance matrix file not found at {distance_matrix_path}. Cannot confirm links.", file=sys.stderr)
@@ -949,12 +1037,19 @@ def main():
 
                 # Add SNP distance details to the report
                 if sample in sample_snp_distances and sample_snp_distances[sample]:
-                    f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= 9):\n")
                     # Sort distances for consistent reporting
                     sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
-                    for linked_sample, distance, shared_haplotype_percent in sorted_distances:
-                        # Add the shared haplotype percentage to the report line
-                        f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes\n")
+                    
+                    # Extract total_count_for_sample once from the first linked pair (all should be the same for 'sample')
+                    # The tuple is (linked_sample, distance, shared_haplotype_percent, shared_count, total_count_for_sample)
+                    if sorted_distances: # Ensure there's at least one linked sample
+                        _, _, _, _, total_haplotypes_in_sample = sorted_distances[0]
+                        f_report.write(f"\nTotal haplotypes in {sample}: {total_haplotypes_in_sample}\n")
+
+                    f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= 9):\n")
+                    for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
+                        # Add the shared haplotype percentage and raw count to the report line
+                        f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
                     f_report.write("\n") # Add a blank line after the distances
 
                 # Determine cluster status based on events and final mapping
@@ -1050,12 +1145,69 @@ def main():
                 if report_file.is_file() and sample in sample_snp_distances and sample_snp_distances[sample]:
                     try:
                         with open(report_file, 'a') as f_out:
-                            f_out.write(f"\nMinimum SNP Distances to Other Samples (<= 9):\n")
                             # Sort distances for consistent reporting
                             sorted_distances = sorted(sample_snp_distances[sample], key=lambda item: item[1])
-                            for linked_sample, distance, shared_haplotype_percent in sorted_distances:
-                                f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes\n")
+
+                            # Extract total_count_for_sample once from the first linked pair
+                            if sorted_distances:
+                                _, _, _, _, total_haplotypes_in_sample = sorted_distances[0]
+                                f_out.write(f"\nTotal haplotypes in {sample}: {total_haplotypes_in_sample}\n")
+
+                            f_out.write(f"\nMinimum SNP Distances to Other Samples (<= 9):\n")
+                            for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
+                                f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
                             f_out.write("\n") # Add a blank line after the distances
+
+                            # Determine cluster status based on events and final mapping for individual report
+                            cluster_status_reported = False
+                            if sample in report_events:
+                                merge_event = next((e for e in report_events[sample] if "caused merge" in e), None)
+                                added_event = next((e for e in report_events[sample] if "added to existing cluster" in e), None)
+                                formed_event = next((e for e in report_events[sample] if "formed new cluster" in e), None)
+
+                                final_cluster_name = final_sample_to_cluster_map.get(sample)
+                                if final_cluster_name:
+                                     # Resolve final cluster name in case of chained merges
+                                     while final_cluster_name in merged_cluster_log:
+                                          final_cluster_name = merged_cluster_log[final_cluster_name]
+                                     members = sorted(list(final_clusters_after_update.get(final_cluster_name, set())))
+                                     members_str = ", ".join(members)
+                                     if merge_event:
+                                          f_out.write(f"\n{sample} involved in merge resulting in {final_cluster_name} -> {members_str}\n")
+                                          cluster_status_reported = True
+                                     elif added_event:
+                                          f_out.write(f"\n{sample} added to {final_cluster_name} -> {members_str}\n")
+                                          cluster_status_reported = True
+                                     elif formed_event:
+                                          f_out.write(f"\n{sample} formed new {final_cluster_name} -> {members_str}\n")
+                                          cluster_status_reported = True
+                                else: # Should not happen if event occurred, but safety check
+                                     f_out.write(f"\n{sample} involved in cluster event, but final cluster unknown.\n")
+                                     cluster_status_reported = True
+
+                            # If no specific event reported, check if it's just part of a cluster
+                            if not cluster_status_reported and sample in final_sample_to_cluster_map:
+                                cluster_name = final_sample_to_cluster_map[sample]
+                                # Resolve final cluster name in case of chained merges
+                                while cluster_name in merged_cluster_log:
+                                     cluster_name = merged_cluster_log[cluster_name]
+                                members = sorted(list(final_clusters_after_update.get(cluster_name, set())))
+                                members_str = ", ".join(members)
+                                # Check if it was already in that cluster initially
+                                initial_cluster = initial_sample_to_cluster.get(sample)
+                                while initial_cluster in merged_cluster_log: # Resolve initial cluster too
+                                     initial_cluster = merged_cluster_log[initial_cluster]
+
+                                if initial_cluster == cluster_name:
+                                     f_out.write(f"\n{sample} already part of {cluster_name} -> {members_str}\n")
+                                else: # Part of final cluster, but wasn't initially or added/merged explicitly
+                                     f_out.write(f"\n{sample} part of final {cluster_name} -> {members_str}\n")
+                                cluster_status_reported = True
+
+                            # If still no cluster status reported, assume no links/not clustered
+                            if not cluster_status_reported:
+                                 f_out.write(f"\n{sample} has no confirmed links and is not part of any cluster.\n")
+                            f_out.write("\n" + "="*50 + "\n\n") # Separator for individual report
                         print(f"  Appended SNP distance details to {report_file}", file=sys.stderr)
                     except IOError as e:
                         print(f"  Error appending SNP distance details to {report_file}: {e}", file=sys.stderr)
