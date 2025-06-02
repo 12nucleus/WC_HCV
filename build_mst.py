@@ -189,30 +189,11 @@ def create_pie_chart_node(sample_counts, sample_colors, node_id, node_size=50):
 
 
 def parse_sample_name(sample_string):
-    """
-    Parses a sample name string to extract the base sample name (e.g., GP0101, 1700046311).
-    Assumes _R_ prefix is already removed.
-    Returns the base_name.
-    """
-    # Look for a part starting with "GP" followed by digits
-    gp_match = re.search(r'(GP\d+)', sample_string)
-    if gp_match:
-        return gp_match.group(1)
 
-    # Look for a sequence of digits that might represent an ID (e.g., 1700046311)
-    # This is a heuristic and might need adjustment based on actual data
-    numeric_matches = re.findall(r'\d+', sample_string)
-    if numeric_matches:
-        # Prioritize longer numeric sequences as potential IDs
-        numeric_matches.sort(key=len, reverse=True)
-        # Consider the longest numeric sequence as the base name if it's reasonably long
-        if numeric_matches[0] and len(numeric_matches[0]) > 5: # Heuristic: > 5 digits
-             return numeric_matches[0]
-
-    # Fallback: if no clear pattern matched, use the whole string
-    # print(f"Warning: Could not reliably parse base name from '{sample_string}'. Using full name.", file=sys.stderr) # Debugging line
-    return sample_string
-
+    parts = sample_string.split('_')
+    if len(parts) <= 2:
+        return sample_string
+    return '_'.join(parts[1:-1])
 
 def plot_interactive_mst(mst, clusters, output_file, min_degree):
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black")
@@ -224,6 +205,7 @@ def plot_interactive_mst(mst, clusters, output_file, min_degree):
 
     # First pass - collect all unique base sample names for coloring and for ensuring representation
     for node_id, samples_in_cluster in clusters.items(): # Iterate through clusters directly
+        print(f"xxxxx Processing cluster {node_id} with {samples_in_cluster} samples")
         for sample in samples_in_cluster:
             base_name = parse_sample_name(sample)
             base_sample_names_for_coloring.add(base_name)

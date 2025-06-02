@@ -760,7 +760,8 @@ def main():
                                     newly_linked_pairs_this_run.add(confirmed_pair_base)
                                     snp_confirmed_links_count += 1
                                     all_linked_pairs.add(confirmed_pair_base)
-
+                                    linked_matrix = square_matrix_path
+                                    linked_fasta = aligned_fasta_path
                                     # Calculate shared haplotype percentage (still needed for reporting)
                                     fasta1_path = fasta_dir / f"{s1_base}.fasta.gz"
                                     fasta2_path = fasta_dir / f"{s2_base}.fasta.gz"
@@ -846,13 +847,36 @@ def main():
             current_sample_to_cluster[s2] = c1
             modified_clusters_this_run.add(c1) # Mark cluster as modified
             report_events[s2].append(f"added to existing cluster {c1}")
+            snp_matrix_src = linked_matrix
+            snp_matrix_dest = os.path.join(c1, f"{c1}_snp_distances_square.tsv")
+            print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
+            aligned_fasta_path_dest = os.path.join(c1, f"{c1}_aligned.fasta")
+            # Copy aligned FASTA to the new cluster directory   
+            if os.path.exists(linked_fasta):
+                shutil.copy2(linked_fasta, aligned_fasta_path_dest)
+                print(f"Copied {linked_fasta} to {aligned_fasta_path_dest}", file=sys.stderr)
+            # Copy SNP distance matrix and PDF to the new cluster directory
+            if os.path.exists(snp_matrix_src):
+                shutil.copy2(snp_matrix_src, snp_matrix_dest)
+                print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
         elif c2 and not c1 and c2 not in clusters_to_delete: # s2 in cluster, s1 is new
             print(f"Adding sample {s1} to cluster {c2} due to link with {s2}", file=sys.stderr)
             current_clusters[c2].add(s1)
             current_sample_to_cluster[s1] = c2
             modified_clusters_this_run.add(c2) # Mark cluster as modified
             report_events[s1].append(f"added to existing cluster {c2}")
-
+            snp_matrix_src = linked_matrix
+            snp_matrix_dest = os.path.join(c2, f"{c2}_snp_distances_square.tsv")
+            print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
+            aligned_fasta_path_dest = os.path.join(c2, f"{c2}_aligned.fasta")
+            # Copy aligned FASTA to the new cluster directory   
+            if os.path.exists(linked_fasta):
+                shutil.copy2(linked_fasta, aligned_fasta_path_dest)
+                print(f"Copied {linked_fasta} to {aligned_fasta_path_dest}", file=sys.stderr)
+            # Copy SNP distance matrix and PDF to the new cluster directory
+            if os.path.exists(snp_matrix_src):
+                shutil.copy2(snp_matrix_src, snp_matrix_dest)
+                print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
         # Case 3: Link is between samples already in the same cluster (or a cluster marked for deletion)
         elif c1 and c2 and c1 == c2:
              # No structural change, but note for report that they are linked within the cluster
@@ -887,13 +911,14 @@ def main():
 
             # Define source and destination paths for SNP distance matrix and PDF
             # Assuming SNP distance matrix for cluster is in Reports and named like '{cluster_name}_snp_distances_square.tsv'
-            snp_matrix_src = square_matrix_path
+            snp_matrix_src = linked_matrix
             snp_matrix_dest = os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances_square.tsv")
+            print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
             aligned_fasta_path_dest = os.path.join(cluster_dir, f"{new_cluster_name}_aligned.fasta")
             # Copy aligned FASTA to the new cluster directory   
-            if os.path.exists(aligned_fasta_path):
-                shutil.copy2(aligned_fasta_path, aligned_fasta_path_dest)
-                print(f"Copied {aligned_fasta_path} to {aligned_fasta_path_dest}", file=sys.stderr)
+            if os.path.exists(linked_fasta):
+                shutil.copy2(linked_fasta, aligned_fasta_path_dest)
+                print(f"Copied {linked_fasta} to {aligned_fasta_path_dest}", file=sys.stderr)
             # Copy SNP distance matrix and PDF to the new cluster directory
             if os.path.exists(snp_matrix_src):
                 shutil.copy2(snp_matrix_src, snp_matrix_dest)
@@ -935,72 +960,25 @@ def main():
     # Generate plots for new or modified clusters
 
     # Visualization Section
-    try:
-        '''
-        # t-SNE Visualization
-        print(f"  Running R script for t-SNE plot...", file=sys.stderr)
-        r_script_path = args.base_dir / "plot_tsne.R"
-        if not r_script_path.is_file():
-            print(f"  Error: R script not found at {r_script_path}", file=sys.stderr)
-            raise FileNotFoundError(f"R script not found: {r_script_path}")
+
+
+    # MST Visualization
+    print(f"  Running MST visualization...", file=sys.stderr)
+    mst_output = Path(cluster_name) / f"{cluster_name}_mst_interactive.html"
+    mst_cmd = [
+        sys.executable,
+        str(args.base_dir / "build_mst.py"),
+        str(snp_matrix_dest),
+        str(mst_output)
+    ]
+    print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
+    result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        print(f"  Warning: MST generation returned code {result.returncode}", file=sys.stderr)
+        if result.stderr:
+            print(f"  MST stderr: {result.stderr}", file=sys.stderr)
+
         
-        plot_output_pdf = Path(cluster_name) / f"{cluster_name}_tsne.pdf"
-        r_command = [
-            args.rscript_path,
-            str(r_script_path),
-            str(distance_matrix_path),
-            str(plot_output_pdf)
-        ]
-        print(f"  Running R script command: {' '.join(r_command)}", file=sys.stderr)
-        result = subprocess.run(r_command, check=False, text=True, capture_output=True)
-        if result.returncode != 0:
-            print(f"  Warning: t-SNE plot generation returned code {result.returncode}", file=sys.stderr)
-            if result.stderr:
-                print(f"  t-SNE stderr: {result.stderr}", file=sys.stderr)
-        '''
-        # MST Visualization
-        print(f"  Running MST visualization...", file=sys.stderr)
-        mst_output = Path(cluster_name) / f"{cluster_name}_mst_interactive.html"
-        mst_cmd = [
-            sys.executable,
-            str(args.base_dir / "build_mst.py"),
-            str(square_matrix_path),
-            str(mst_output)
-        ]
-        print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
-        result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
-        if result.returncode != 0:
-            print(f"  Warning: MST generation returned code {result.returncode}", file=sys.stderr)
-            if result.stderr:
-                print(f"  MST stderr: {result.stderr}", file=sys.stderr)
-
-        # Phylogenetic Tree Visualization
-        print(f"  Running Phylogenetic Tree visualization...", file=sys.stderr)
-        phylo_output = Path(cluster_name) / f"{cluster_name}_phylo_tree.pdf"
-        phylo_cmd = [
-            args.rscript_path,
-            str(args.base_dir / "plot_phylo_tree.R"),
-            str(aligned_fasta_path),
-            str(phylo_output)
-        ]
-        print(f"  Running Phylo Tree command: {' '.join(phylo_cmd)}", file=sys.stderr)
-        result = subprocess.run(phylo_cmd, check=False, text=True, capture_output=True)
-        if result.returncode != 0:
-            print(f"  Warning: Phylo Tree plot generation returned code {result.returncode}", file=sys.stderr)
-            if result.stderr:
-                print(f"  Phylo Tree stderr: {result.stderr}", file=sys.stderr)
-    except FileNotFoundError as e:
-        print(f"  Error: Required file not found for visualization generation: {e}", file=sys.stderr)
-        print(f"  Continuing with report generation...", file=sys.stderr)
-    except subprocess.CalledProcessError as e:
-        print(f"  Error during visualization generation: {e}", file=sys.stderr)
-        if e.stderr:
-            print(f"  Visualization stderr: {e.stderr}", file=sys.stderr)
-        print(f"  Continuing with report generation...", file=sys.stderr)
-
-    except Exception as e:
-        print(f"  Error during visualization generation: {e}", file=sys.stderr)
-        print(f"  Continuing with report generation...", file=sys.stderr)
 
     # --- Generate Run Report ---
     print("\n--- Generating Run Report ---", file=sys.stderr)
@@ -1050,6 +1028,7 @@ def main():
                     for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
                         # Add the shared haplotype percentage and raw count to the report line
                         f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
+                        
                     f_report.write("\n") # Add a blank line after the distances
 
                 # Determine cluster status based on events and final mapping
