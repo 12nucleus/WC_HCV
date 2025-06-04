@@ -195,7 +195,7 @@ def parse_sample_name(sample_string):
         return sample_string
     return '_'.join(parts[1:-1])
 
-def plot_interactive_mst(mst, clusters, output_file, min_degree):
+def plot_interactive_mst(mst, clusters, output_file, my_min_degree,min_snp):
     net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="black")
     
     # Track unique base sample names for coloring
@@ -345,11 +345,11 @@ def plot_interactive_mst(mst, clusters, output_file, min_degree):
             </li>
         """
     
-    legend_html += """
+    legend_html += f"""
         </ul>
         <div style="margin-top: 10px; font-style: italic;">
-            Note: Only showing edges with ≤9 SNPs distance<br>
-            Only showing nodes with >1 connection in MST
+            Note: Only showing edges with ≤ {min_snp} SNPs distance<br>
+            Only showing nodes with > {my_min_degree} connection in MST
         </div>
     </div>
     """
@@ -625,18 +625,18 @@ def main():
     parser = argparse.ArgumentParser(description="Builds an interactive Minimum Spanning Tree (MST) visualization from a SNP distance matrix.")
     parser.add_argument("input_file", type=str, help="Path to the input SNP distance matrix file (TSV format).")
     parser.add_argument("output_file", type=str, help="Path to the output HTML file for the interactive MST visualization.")
-    parser.add_argument("--min_degree", type=int, default=1,
-                        help="Minimum degree for filtering nodes in the visualization. Nodes with fewer connections than this value will be hidden unless they are required to represent a unique sample type. Default is 1.")
-    
+    parser.add_argument("--min_degree", type=int, default=1,help="Minimum degree for filtering nodes in the visualization. Nodes with fewer connections than this value will be hidden unless they are required to represent a unique sample type. Default is 1.")
+    parser.add_argument("--min_snp", type=int, default=9, help="Minimum SNP distance for edges to be included in the visualization. Edges with a weight greater than this value will be excluded. Default is 9.")
     args = parser.parse_args()
 
     global my_min_degree
+    global my_min_snp
     my_min_degree = args.min_degree # Assign from parsed arguments
-
+    my_min_snp = args.min_snp # Assign from parsed arguments
     samples, dist_matrix = read_distance_matrix(args.input_file)
     mst, clusters = build_eburst_mst(samples, dist_matrix)
     save_cluster_info(mst, clusters)
-    plot_interactive_mst(mst, clusters, args.output_file, my_min_degree)
+    plot_interactive_mst(mst, clusters, args.output_file, my_min_degree, my_min_snp)
     print(f"MST visualization generated successfully. Open {args.output_file} in your web browser.")
 
 if __name__ == "__main__":
