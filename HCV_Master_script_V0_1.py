@@ -14,6 +14,26 @@ from collections import defaultdict, deque
 import gzip
 import csv # Added for parsing snp-dists output
 import numpy as np
+import io
+import pandas as pd
+
+def mst_tree(mst_output, snp_matrix_dest, args, degree): 
+    print(f"  Running MST visualization...", file=sys.stderr)
+
+    mst_cmd = [
+        sys.executable,
+        str(args.base_dir / "build_mst.py"),
+        str(snp_matrix_dest),
+        str(mst_output),
+        "--min_degree", str(degree),
+    ]
+    print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
+    result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        print(f"  Warning: MST generation returned code {result.returncode}", file=sys.stderr)
+        if result.stderr:
+            print(f"  MST stderr: {result.stderr}", file=sys.stderr)
+
 
 def run_script(script_path: Path, args_list: list, capture_stdout=True, cwd=None) -> tuple[int, str | None]:
     """Runs a Python script using subprocess and returns status code and stdout."""
@@ -327,7 +347,7 @@ def main():
     parser.add_argument("--mafft_path", type=str, default="mafft", help="Path to the mafft executable.") # Added MAFFT path
     parser.add_argument("--rscript_path", type=str, default="Rscript", help="Path to the Rscript executable.")
     parser.add_argument("--hcv_kmer_threshold", type=float, default=0.1, help="Minimum fraction of matching kmers for a sample to be considered HCV")
-    fasttree = "/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/FastTree"
+    parser.add_argument("--snp_distance_threshold", type=float, default=9, help="SNP distance threshold for transmission confirmation.")
     args = parser.parse_args()
 
     # --- Validate paths and setup directories ---
@@ -341,13 +361,12 @@ def main():
     reports_dir = args.base_dir / "Reports"
     kmer_dir = args.base_dir / "HCV_Kmers"
     fasta_dir = args.base_dir / "HCV_fasta"
-    combined_reads_dir = args.base_dir / "combined_reads" # combine script creates this
+
 
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     combine_script_path = args.base_dir / args.combine_script
     distancer_script_path = args.base_dir / args.distancer_script
-    transmission_script_path = args.base_dir / args.transmission_script # Path to the next script
 
     if not combine_script_path.is_file():
          print(f"Error: Combine script not found: {combine_script_path}", file=sys.stderr)
@@ -359,7 +378,6 @@ def main():
 
     processed_samples = []
     files_to_send = [] # For potential emailing
-    master_log_file = reports_dir / "master_pipeline.log" # Central log file
     run_report_lines = [] # Store lines for the final run report
 
     # --- Load Existing Clusters ---
@@ -463,8 +481,6 @@ def main():
         print("No samples successfully processed in Step 1. Skipping Step 2.", file=sys.stderr)
     else:
         print(f"Analyzing {len(processed_samples)} samples: {', '.join(processed_samples)}", file=sys.stderr)
-
-    sample_link_info = defaultdict(list) # Store linked sample and min distance for the run report: {sample: [(linked_sample, min_dist), ...]}
     
     for sample_prefix in processed_samples:
         print(f"\nAnalyzing k-mers for sample: {sample_prefix}", file=sys.stderr)
@@ -715,7 +731,7 @@ def main():
                      continue # Skip to next group
 
                 # 4. Parse the 3-column distance output and confirm links
-                print(f"  Parsing 3-column distance output to confirm links (Threshold <= 9)...", file=sys.stderr)
+                print(f"  Parsing 3-column distance output to confirm links (Threshold <= {args.snp_distance_threshold})...", file=sys.stderr)
                 
                 # Initialize a dictionary to store SNP distances for reporting
                 sample_snp_distances = defaultdict(list)
@@ -753,7 +769,7 @@ def main():
                             min_sample_distance = min(distances_list)
                             
                             # Now apply the threshold and add to confirmed links
-                            if min_sample_distance <= 9:
+                            if min_sample_distance <= args.snp_distance_threshold:
                                 confirmed_pair_base = tuple(sorted((s1_base, s2_base)))
                                 if confirmed_pair_base not in newly_linked_pairs_this_run:
                                     print(f"    -> Link confirmed: {s1_base} <-> {s2_base} (SNP Distance: {min_sample_distance})", file=sys.stderr)
@@ -847,6 +863,7 @@ def main():
             current_sample_to_cluster[s2] = c1
             modified_clusters_this_run.add(c1) # Mark cluster as modified
             report_events[s2].append(f"added to existing cluster {c1}")
+            '''
             snp_matrix_src = linked_matrix
             snp_matrix_dest = os.path.join(c1, f"{c1}_snp_distances_square.tsv")
             print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
@@ -859,12 +876,14 @@ def main():
             if os.path.exists(snp_matrix_src):
                 shutil.copy2(snp_matrix_src, snp_matrix_dest)
                 print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
+            '''
         elif c2 and not c1 and c2 not in clusters_to_delete: # s2 in cluster, s1 is new
             print(f"Adding sample {s1} to cluster {c2} due to link with {s2}", file=sys.stderr)
             current_clusters[c2].add(s1)
             current_sample_to_cluster[s1] = c2
             modified_clusters_this_run.add(c2) # Mark cluster as modified
             report_events[s1].append(f"added to existing cluster {c2}")
+            '''
             snp_matrix_src = linked_matrix
             snp_matrix_dest = os.path.join(c2, f"{c2}_snp_distances_square.tsv")
             print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
@@ -877,6 +896,7 @@ def main():
             if os.path.exists(snp_matrix_src):
                 shutil.copy2(snp_matrix_src, snp_matrix_dest)
                 print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
+            '''
         # Case 3: Link is between samples already in the same cluster (or a cluster marked for deletion)
         elif c1 and c2 and c1 == c2:
              # No structural change, but note for report that they are linked within the cluster
@@ -902,29 +922,123 @@ def main():
             modified_clusters_this_run.add(new_cluster_name) # Mark new cluster
             for sample in new_cluster_set:
                 current_sample_to_cluster[sample] = new_cluster_name
-                report_events[sample].append(f"formed new cluster {new_cluster_name}")
-            
+                report_events[sample].append(f"formed new cluster {new_cluster_name}")            
             # Create directory for the new cluster within Reports
             cluster_dir = new_cluster_name
             os.makedirs(cluster_dir, exist_ok=True)
             print(f"Created directory: {cluster_dir}", file=sys.stderr)
+            
+            # Get absolute path for cluster directory
+            cluster_dir_abs = os.path.abspath(cluster_dir)
+            
+            #iterate over the samples in the new cluster and create the aligned FASTA and SNP distance matrix in the new cluster directory
+            with open(os.path.join(cluster_dir, f"{new_cluster_name}_unaligned.fasta"), 'w') as f_out:
+                for sample in new_cluster_set:
+                    fasta_gz = fasta_dir / f"{sample}.fasta.gz"
+                    if fasta_gz.is_file():
+                        with gzip.open(fasta_gz, 'rt') as f_in:
+                            shutil.copyfileobj(f_in, f_out)
+                    else:
+                        print(f"Warning: FASTA file not found for {sample}, skipping.", file=sys.stderr)
+            # Align the combined FASTA using MAFFT via Docker
+            print(f"Aligning combined FASTA for new cluster {new_cluster_name} using MAFFT (via Docker)...", file=sys.stderr)
+            mafft_docker_cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{cluster_dir_abs}:/data", # Use absolute path for mounting
+                    "pegi3s/mafft",
+                    "mafft", "--adjustdirection", "--auto", "--quiet", "--thread", "1", "--reorder",
+                    f"/data/{new_cluster_name}_unaligned.fasta"
+                ]
+            print(f"Using Docker mount path: {cluster_dir_abs}:/data", file=sys.stderr)  # Debug line
+            try:
+                # Run Docker command, capture stdout (alignment)
+                mafft_process_raw = subprocess.run(mafft_docker_cmd, check=True, text=True, capture_output=True)
+                mafft_process = mafft_process_raw.stdout.replace('_R_', '')
+                # Write captured stdout to the aligned fasta file
+                with open(os.path.join(cluster_dir, f"{new_cluster_name}_aligned.fasta"), 'w') as f_aligned_out:
+                    f_aligned_out.write(mafft_process)
 
-            # Define source and destination paths for SNP distance matrix and PDF
-            # Assuming SNP distance matrix for cluster is in Reports and named like '{cluster_name}_snp_distances_square.tsv'
-            snp_matrix_src = linked_matrix
-            snp_matrix_dest = os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances_square.tsv")
-            print (f"xXxXxXxXxX Source SNP distance matrix: {snp_matrix_src}", file=sys.stderr)
-            aligned_fasta_path_dest = os.path.join(cluster_dir, f"{new_cluster_name}_aligned.fasta")
-            # Copy aligned FASTA to the new cluster directory   
-            if os.path.exists(linked_fasta):
-                shutil.copy2(linked_fasta, aligned_fasta_path_dest)
-                print(f"Copied {linked_fasta} to {aligned_fasta_path_dest}", file=sys.stderr)
-            # Copy SNP distance matrix and PDF to the new cluster directory
-            if os.path.exists(snp_matrix_src):
-                shutil.copy2(snp_matrix_src, snp_matrix_dest)
-                print(f"Copied {snp_matrix_src} to {snp_matrix_dest}", file=sys.stderr)
-            else:
-                print(f"Warning: SNP distance matrix file not found for {new_cluster_name} at {snp_matrix_src}", file=sys.stderr)
+                print(f"  MAFFT alignment complete: {os.path.join(cluster_dir, f'{new_cluster_name}_aligned.fasta')}", file=sys.stderr)
+            except FileNotFoundError:
+                 print(f"  Error: MAFFT executable not found at {args.mafft_path}. Skipping group {new_cluster_name}.", file=sys.stderr)
+                 continue # Skip to next group
+            except subprocess.CalledProcessError as e:
+                 print(f"  Error running MAFFT for group {new_cluster_name}: {e}", file=sys.stderr)
+                 if e.stderr: print(f"  MAFFT Stderr:\n{e.stderr}", file=sys.stderr)
+                 continue # Skip to next group
+
+            # create SNP distance matrix using snp-dists
+            print(f"Running snp-dists on aligned FASTA for new cluster {new_cluster_name}...", file=sys.stderr)
+            snp_command = [args.snp_dists_path, "-b", "-a", os.path.join(cluster_dir, f"{new_cluster_name}_aligned.fasta")]
+            snp_process = subprocess.run(snp_command, check=False, text=True, capture_output=True) # Use check=False to handle errors manually
+            # Parse output as 2D array (distance matrix)
+            try:
+                # Load SNP matrix as strings
+                raw_matrix = np.genfromtxt(io.StringIO(snp_process.stdout), delimiter='\t', dtype=str)
+
+                # Parse original sample names
+                full_sample_names = raw_matrix[0, 1:]
+                sample_base_names = []
+
+                # Extract "biological" sample names between first and last underscore
+                for name in full_sample_names:
+                    parts = name.split('_')
+                    if len(parts) >= 3:
+                        sample_base_names.append('_'.join(parts[1:-1]))
+                    else:
+                        sample_base_names.append(name)  # Fallback: use full name if format unexpected
+
+                full_sample_names = np.array(full_sample_names)
+                sample_base_names = np.array(sample_base_names)
+
+                # Convert matrix part to float
+                dist_matrix = raw_matrix[1:, 1:].astype(float)
+
+                # Fill diagonal to ignore self comparisons
+                np.fill_diagonal(dist_matrix, np.inf)
+
+                # Keep samples with distance <= threshold to a *different* base sample
+                keep_mask = []
+                for i, (sample_i, base_i) in enumerate(zip(full_sample_names, sample_base_names)):
+                    row = dist_matrix[i]
+                    base_diffs = (sample_base_names != base_i)
+                    within_threshold = (row <= args.snp_distance_threshold)
+                    should_keep = np.any(base_diffs & within_threshold)
+                    keep_mask.append(should_keep)
+
+                keep_mask = np.array(keep_mask)
+
+                # Filter matrix and names
+                filtered_matrix = dist_matrix[keep_mask][:, keep_mask]
+                kept_sample_names = full_sample_names[keep_mask]
+
+                # Reconstruct full matrix with headers and row labels
+                output_lines = []
+                output_lines.append('\t' + '\t'.join(kept_sample_names))
+                for name, row in zip(kept_sample_names, filtered_matrix):
+                    row_str = '\t'.join(str(int(val)) if np.isfinite(val) else '0' for val in row)
+                    output_lines.append(f"{name}\t{row_str}")
+
+                output_path = os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances.tsv")
+                with open(output_path, 'w') as f_dist_out:
+                    f_dist_out.write('\n'.join(output_lines) + '\n')
+
+                print(f"  Filtered SNP matrix written to: {output_path}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"\n\n!!!! Error parsing or filtering SNP distance matrix for {new_cluster_name}: {e} !!!!\n\n", file=sys.stderr)
+                continue
+
+
+            # run MST visualization for the new cluster
+            html_output = (os.path.join(cluster_dir, f"{new_cluster_name}_MST_full.html"))
+            matrix_output = (os.path.join(cluster_dir, f"{new_cluster_name}_snp_distances.tsv"))
+            print(f"Running MST visualization for new cluster {new_cluster_name}...", file=sys.stderr)
+            # Call the mst_tree function to generate the MST visualization
+            mst_tree(html_output, matrix_output, args, 0) # Use degree 0 for new clusters
+            html_output = (os.path.join(cluster_dir, f"{new_cluster_name}_MST_overview.html"))
+            mst_tree(html_output, matrix_output, args, 1) # Use degree 0 for new clusters
+
             next_cluster_id_counter += 1
 
     # --- Write the final cluster state to file ---
@@ -941,7 +1055,7 @@ def main():
     # The report generation logic later needs to be updated to use this map and the report_events dictionary.
     final_sample_to_cluster_map = current_sample_to_cluster.copy()
 
-    # Prepare cluster information for plotting
+    # Prepare cluster information for report
     cluster_info_for_plotting = []
     # Use the final clusters after potential merges/deletions
     final_clusters_after_update = {k: v for k, v in current_clusters.items() if k not in clusters_to_delete}
@@ -955,28 +1069,10 @@ def main():
               })
 
 
-    # --- Step 3b: Generate Cluster Plots (Looping after cluster file is written) ---
-    print("\n--- Running Step 3b: Generating Cluster Plots ---", file=sys.stderr)
-    # Generate plots for new or modified clusters
-
-    # Visualization Section
 
 
-    # MST Visualization
-    print(f"  Running MST visualization...", file=sys.stderr)
-    mst_output = Path(cluster_name) / f"{cluster_name}_mst_interactive.html"
-    mst_cmd = [
-        sys.executable,
-        str(args.base_dir / "build_mst.py"),
-        str(snp_matrix_dest),
-        str(mst_output)
-    ]
-    print(f"  Running MST command: {' '.join(mst_cmd)}", file=sys.stderr)
-    result = subprocess.run(mst_cmd, check=False, text=True, capture_output=True)
-    if result.returncode != 0:
-        print(f"  Warning: MST generation returned code {result.returncode}", file=sys.stderr)
-        if result.stderr:
-            print(f"  MST stderr: {result.stderr}", file=sys.stderr)
+
+
 
         
 
@@ -1024,7 +1120,7 @@ def main():
                         _, _, _, _, total_haplotypes_in_sample = sorted_distances[0]
                         f_report.write(f"\nTotal haplotypes in {sample}: {total_haplotypes_in_sample}\n")
 
-                    f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= 9):\n")
+                    f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= {args.snp_distance_threshold}):\n")
                     for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
                         # Add the shared haplotype percentage and raw count to the report line
                         f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
@@ -1132,7 +1228,7 @@ def main():
                                 _, _, _, _, total_haplotypes_in_sample = sorted_distances[0]
                                 f_out.write(f"\nTotal haplotypes in {sample}: {total_haplotypes_in_sample}\n")
 
-                            f_out.write(f"\nMinimum SNP Distances to Other Samples (<= 9):\n")
+                            f_out.write(f"\nMinimum SNP Distances to Other Samples (<= {args.snp_distance_threshold}):\n")
                             for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
                                 f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
                             f_out.write("\n") # Add a blank line after the distances
