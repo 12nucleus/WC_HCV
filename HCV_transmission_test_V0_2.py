@@ -528,7 +528,7 @@ def main():
     print("Generating t-SNE plot using external R script...", file=sys.stderr)
     tsne_input_matrix_file = mmatrix_file # Use the already generated matrix
     # Make external_r_script_path configurable or find relative to script? Hardcoded for now.
-    external_r_script_path = Path("/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/plot_tsne.R")
+    external_r_script_path = Path("/Volumes/MacOS_Storage/Projects/HCV_pipeline/plot_tsne.R")
     # Check if R script exists
     if not external_r_script_path.is_file():
         print(f"Error: R script not found at {external_r_script_path}. Cannot generate plot.", file=sys.stderr)

@@ -54,10 +54,9 @@ def main():
     parser.add_argument("working_dir", type=Path, help="Working directory containing input and for output subdirectories.")
     parser.add_argument("r1_file", type=Path, help="Path to the R1 FASTQ file.")
     parser.add_argument("tmp_dir", type=Path, help="Path to the shared temporary directory for this run.")
-    parser.add_argument("--ref_kmer_file", type=Path, default=Path("/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/"),
-                        help="Path to the reference k-mer file (default: /Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/).")
+    parser.add_argument("--ref_kmer_file", type=Path, default=Path("/Volumes/MacOS_Storage/Projects/HCV_pipeline/reference_genome/"),help="Path to the reference k-mer file (default: /Volumes/MacOS_Storage/Projects/HCV_pipeline/reference_genome/).")
     parser.add_argument("--cutadapt_path", type=str, default="cutadapt", help="Path to the cutadapt executable.")
-    parser.add_argument("--bbmerge_path", type=str, default="/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
+    parser.add_argument("--bbmerge_path", type=str, default="/Volumes/MacOS_Storage/Projects/HCV_pipeline/bbmap/bbmerge.sh", help="Path to the bbmerge.sh script.")
     parser.add_argument("--min_overlap", type=int, default=150, help="Minimum overlap for bbmerge.")
     parser.add_argument("--min_count", type=int, default=10, help="Minimum count for a sequence to be kept.")
     parser.add_argument("--min_kmer_matches", type=int, default=15, help="Minimum number of reference k-mer matches required.")
@@ -88,7 +87,7 @@ def main():
     kmers_dir.mkdir(parents=True, exist_ok=True)
 
     # Validate the reference k-mer file/directory using hardcoded values
-    ref_kmer_dir = Path("/Volumes/DOH_HOME/pxl10/Projects/HCV_pipeline/reference_genome/")
+    ref_kmer_dir = Path("/Volumes/MacOS_Storage/Projects/HCV_pipeline/reference_genome/")
     ref_file1 = ref_kmer_dir / "1a_kmer_ref_counts.out"
     ref_file2 = ref_kmer_dir / "1b_kmer_ref_counts.out"
     if not (ref_file1.is_file() and ref_file2.is_file()):
