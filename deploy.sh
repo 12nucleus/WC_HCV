@@ -32,7 +32,9 @@ if [ ! -d "$SCRIPT_DIR/venv" ]; then
 fi
 source "$SCRIPT_DIR/venv/bin/activate"
 cd "$SCRIPT_DIR"
-waitress-serve --port=5055 --host=0.0.0.0 web_frontend.app:app
+IP_ADDR=$(hostname -I | awk '{print $1}')
+echo "Starting server on http://$IP_ADDR:5055"
+waitress-serve --port=5055 --host=$IP_ADDR web_frontend.app:app
 EOL
 
 chmod +x start_server.sh
@@ -48,7 +50,8 @@ To start the server:
 The server will run on port 5055.
 
 To access the web interface:
-http://<server-ip>:5055
+http://<machine-ip>:5055
+(Replace <machine-ip> with your server's actual IP address)
 
 EOL
 
