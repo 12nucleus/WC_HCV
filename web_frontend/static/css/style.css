@@ -1,0 +1,133 @@
+/* Custom CSS for HCV Pipeline Web Interface */
+
+body {
+    background-color: #ffffff; /* White background */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* More modern font */
+    min-height: 100vh; /* Ensure body takes full viewport height for centering */
+    display: flex; /* Use flexbox for centering */
+    flex-direction: column; /* Stack children vertically */
+    justify-content: center; /* Center content vertically */
+    align-items: center; /* Center content horizontally */
+}
+
+.content-container {
+    position: relative; /* Ensure content is above the background */
+    z-index: 1;
+    background-color: rgba(255, 255, 255, 0.8); /* Semi-transparent white background for content */
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    /* Removed margin-top/bottom auto as flexbox handles centering */
+}
+
+#background-svg-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1; /* Send to back */
+    overflow: hidden; /* Hide overflow if SVG is larger than viewport */
+}
+
+#background-svg-container svg {
+    width: 100%;
+    height: 100%;
+    display: block; /* Remove extra space below SVG */
+}
+
+.content-container {
+    position: relative; /* Ensure content is above the background */
+    z-index: 1;
+    background-color: rgba(255, 255, 255, 0.8); /* Semi-transparent white background for content */
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.container-fluid {
+    max-width: 90%; /* Make it almost screen wide */
+}
+
+h1 {
+    color: #00796b; /* Darker teal for headings */
+    margin-bottom: 30px;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+}
+
+.nav-tabs .nav-link {
+    color: #00796b; /* Darker teal */
+    border-color: #a7d9d9 #a7d9d9 #e9f5f5; /* Lighter border, match body background */
+}
+
+.nav-tabs .nav-link.active {
+    color: #004d40; /* Even darker teal */
+    background-color: #e9f5f5; /* Match body background */
+    border-color: #00796b #00796b #e9f5f5; /* Darker border for active tab */
+}
+
+.card {
+    border: 1px solid #b2dfdb; /* Teal border */
+    border-radius: 0.5rem;
+    box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1); /* Slightly stronger shadow */
+    margin-bottom: 20px;
+}
+
+.card-header {
+    background-color: #00796b; /* Darker teal */
+    color: white;
+    font-weight: bold;
+    border-bottom: 1px solid #004d40; /* Even darker teal for bottom border */
+    border-top-left-radius: calc(0.5rem - 1px);
+    border-top-right-radius: calc(0.5rem - 1px);
+}
+
+.form-text {
+    font-size: 0.85em;
+    color: #4a6a6a; /* Darker teal-grey */
+}
+
+#pipeline-output {
+    background-color: #263238; /* Darker, more professional background */
+    color: #e0f2f1; /* Light teal text */
+    border-radius: 0.25rem;
+    font-family: 'Fira Code', 'Courier New', Courier, monospace; /* Monospace font for code/logs */
+    height: 500px;
+    overflow-y: scroll;
+    border: 1px solid #004d40; /* Dark teal border */
+}
+
+.list-group-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem; /* Smaller padding */
+    font-size: 0.9em; /* Smaller font size */
+    border: 1px solid #b2dfdb; /* Light teal border */
+    margin-bottom: -1px; /* To make borders collapse */
+    background-color: #ffffff; /* White background for list items */
+}
+
+.list-group-item:first-child {
+    border-top-left-radius: 0.25rem;
+    border-top-right-radius: 0.25rem;
+}
+
+.list-group-item:last-child {
+    margin-bottom: 0;
+    border-bottom-right-radius: 0.25rem;
+    border-bottom-left-radius: 0.25rem;
+}
+
+.list-group-item button {
+    margin-left: 10px;
+}
+
+.modal-body pre {
+    background-color: #f0f4f3; /* Light background for modal code */
+    padding: 15px;
+    border-radius: 5px;
+    max-height: 70vh; /* Limit height of modal content */
+    overflow-y: auto;
+    border: 1px solid #b2dfdb; /* Light teal border */
+}
