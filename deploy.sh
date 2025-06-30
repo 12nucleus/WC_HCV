@@ -31,7 +31,8 @@ if [ ! -d "$SCRIPT_DIR/venv" ]; then
   exit 1
 fi
 source "$SCRIPT_DIR/venv/bin/activate"
-waitress-serve --port=5055 --call 'web_frontend.app:create_app'
+cd "$SCRIPT_DIR"
+waitress-serve --port=5055 --host=0.0.0.0 web_frontend.app:app
 EOL
 
 chmod +x start_server.sh
