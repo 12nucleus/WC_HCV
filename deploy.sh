@@ -25,7 +25,12 @@ pip install -r requirements.txt
 # Create start script
 cat > start_server.sh << 'EOL'
 #!/bin/bash
-source venv/bin/activate
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+if [ ! -d "$SCRIPT_DIR/venv" ]; then
+  echo "Error: Virtual environment not found in $SCRIPT_DIR/venv"
+  exit 1
+fi
+source "$SCRIPT_DIR/venv/bin/activate"
 waitress-serve --port=5055 --call 'web_frontend.app:create_app'
 EOL
 
