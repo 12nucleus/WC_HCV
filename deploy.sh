@@ -26,7 +26,7 @@ pip install -r requirements.txt
 cat > start_server.sh << 'EOL'
 #!/bin/bash
 source venv/bin/activate
-waitress-serve --call 'web_frontend.app:create_app'
+waitress-serve --port=5055 --call 'web_frontend.app:create_app'
 EOL
 
 chmod +x start_server.sh
@@ -39,10 +39,10 @@ To start the server:
 1. Open terminal in this directory
 2. Run: ./start_server.sh
 
-The server will run on port 8080 by default.
+The server will run on port 5055.
 
 To access the web interface:
-http://<server-ip>:8080
+http://<server-ip>:5055
 
 EOL
 

@@ -33,7 +33,7 @@ This repository contains a complete deployment package for the HCV Pipeline web 
 
 5. Access the web interface at:
    ```
-   http://<server-ip>:8080
+   http://<server-ip>:5055
    ```
 
 ## Requirements
