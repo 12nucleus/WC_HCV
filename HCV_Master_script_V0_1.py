@@ -277,7 +277,7 @@ def main():
     parser.add_argument("--keep_unmerged", action='store_true', help="Keep unmerged reads from the combine step.") # New argument
     parser.add_argument("--combine_script", type=str, default="HCV_combine_reads_V0_1.py", help="Name of the combine reads script.")
     parser.add_argument("--distancer_script", type=str, default="HCV_kmers_distancer_V0_1.py", help="Name of the kmer distancer script.")
-    parser.add_argument("--transmission_script", type=str, default="HCV_transmission_test_V0_2.py", help="Name of the transmission test script.")
+    ##parser.add_argument("--transmission_script", type=str, default="HCV_transmission_test_V0_2.py", help="Name of the transmission test script.")
     parser.add_argument("--r1_pattern", type=str, default="*_R1_001.fastq.gz", help="Glob pattern for R1 files.")
     parser.add_argument("--kmer_overlap_threshold", type=float, default=0.005, help="Threshold for k-mer overlap ratio to trigger transmission test.")
     parser.add_argument("--snp_dists_path", type=str, default="snp-dists", help="Path to the snp-dists executable.")
@@ -517,13 +517,9 @@ def main():
                  with open(report_file, 'a') as f_out:
                       f_out.write(f"\nFATAL ERROR during kmer/SNP check analysis: {e}\n")
 
-        # Clean up main temp_run_dir for the sample *after* all pairs have been checked
+        # Clean up will happen after sample analysis is complete
         finally:
-            if temp_run_dir and temp_run_dir.exists() and not args.keep_tmp:
-                print(f"Removing temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
-                shutil.rmtree(temp_run_dir, ignore_errors=True)
-            elif temp_run_dir and temp_run_dir.exists() and args.keep_tmp:
-                print(f"Keeping temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
+            pass
 
 
 
@@ -716,11 +712,6 @@ def main():
                                     newly_linked_pairs_this_run.add(confirmed_pair_base)
                                     snp_confirmed_links_count += 1
                                     all_linked_pairs.add(confirmed_pair_base)
-                                    linked_matrix = square_matrix_path
-                                    linked_fasta = aligned_fasta_path
-                                    # Calculate shared haplotype percentage (still needed for reporting)
-                                    fasta1_path = fasta_dir / f"{s1_base}.fasta.gz"
-                                    fasta2_path = fasta_dir / f"{s2_base}.fasta.gz"
                                     # Calculate shared haplotype percentage using the new method
                                     # The square_matrix_path is available from the group processing
                                     # Calculate shared haplotype percentage using the new method
@@ -1050,6 +1041,7 @@ def main():
                 f_report.write(f"\n  Minimum SNP Distances to Other Samples (<= {args.snp_distance_threshold}):\n")
                 for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
                     # Add the shared haplotype percentage and raw count to the report line
+                    shared_haplotype_percent = (shared_count / total_haplotypes_in_sample * 100) if total_haplotypes_in_sample > 0 else 0
                     f_report.write(f"    -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
                     
                 f_report.write("\n") # Add a blank line after the distances
@@ -1149,6 +1141,7 @@ def main():
 
                         f_out.write(f"\nMinimum SNP Distances to Other Samples (<= {args.snp_distance_threshold}):\n")
                         for linked_sample, distance, shared_haplotype_percent, shared_count, _ in sorted_distances: # Ignore total_count_for_sample here
+                            shared_haplotype_percent = (shared_count / total_haplotypes_in_sample * 100) if total_haplotypes_in_sample > 0 else 0
                             f_out.write(f"  -> Link confirmed: {sample} <-> {linked_sample} (SNP Distance: {distance}), {shared_haplotype_percent:.2f}% shared haplotypes ({shared_count} haplotypes)\n")
                         f_out.write("\n") # Add a blank line after the distances
 
@@ -1214,6 +1207,14 @@ def main():
     else:
         print("  Warning: processed_samples or sample_snp_distances not found. Skipping appending SNP details to individual reports.", file=sys.stderr)
 
+
+    # Clean up temp directories after all processing is complete
+    for sample_prefix, temp_run_dir in sample_temp_dirs.items():
+        if temp_run_dir and temp_run_dir.exists() and not args.keep_tmp:
+            print(f"Removing temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
+            shutil.rmtree(temp_run_dir, ignore_errors=True)
+        elif temp_run_dir and temp_run_dir.exists() and args.keep_tmp:
+            print(f"Keeping temporary directory for sample {sample_prefix}: {temp_run_dir}", file=sys.stderr)
 
     # --- Step 4: Emailing (Optional) ---
     print("\n--- Pipeline Finished ---", file=sys.stderr)
