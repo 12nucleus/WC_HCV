@@ -7,6 +7,28 @@ document.addEventListener('DOMContentLoaded', function() {
     const htmlReportsList = document.getElementById('html-reports-list');
     const textViewModal = new bootstrap.Modal(document.getElementById('textViewModal'));
     const textViewContent = document.getElementById('textViewContent');
+    
+    // Sorting state
+    let currentTextSort = 'name'; // Default to name sort
+    let currentHtmlSort = 'name'; // Default to name sort
+    let isTextSortAsc = true; // Default to ascending
+    let isHtmlSortAsc = true; // Default to ascending
+
+    // Initialize sort arrows
+    function initSortArrows() {
+        document.querySelectorAll('.sort-arrow').forEach(arrow => {
+            const sortType = arrow.dataset.sort;
+            const fileType = arrow.closest('.sort-btn').dataset.type;
+            
+            if (fileType === 'text' && sortType === currentTextSort) {
+                arrow.innerHTML = isTextSortAsc ? '↑' : '↓';
+            } else if (fileType === 'html' && sortType === currentHtmlSort) {
+                arrow.innerHTML = isHtmlSortAsc ? '↑' : '↓';
+            } else {
+                arrow.innerHTML = '';
+            }
+        });
+    }
 
     const textReportsPagination = document.getElementById('text-reports-pagination');
     const htmlReportsPagination = document.getElementById('html-reports-pagination');
@@ -112,13 +134,57 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Sorting functions
+    function sortByName(a, b) {
+        return a.localeCompare(b);
+    }
+
+
+    // Function to sort files based on current sort type
+    function sortFiles(files, sortType, isAsc) {
+        const sortedFiles = [...files];
+        if (sortType === 'name') {
+            sortedFiles.sort(sortByName);
+        }
+        return isAsc ? sortedFiles : sortedFiles.reverse();
+    }
+
+    // Add event listeners for sort buttons
+    document.querySelectorAll('.sort-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const sortType = this.dataset.sort;
+            const fileType = this.dataset.type;
+            
+            if (fileType === 'text') {
+                if (currentTextSort === sortType) {
+                    isTextSortAsc = !isTextSortAsc;
+                } else {
+                    currentTextSort = sortType;
+                    isTextSortAsc = true;
+                }
+                allTextFiles = sortFiles(allTextFiles, currentTextSort, isTextSortAsc);
+                renderFiles(allTextFiles, textReportsList, textReportsPagination, 1, 'text');
+            } else if (fileType === 'html') {
+                if (currentHtmlSort === sortType) {
+                    isHtmlSortAsc = !isHtmlSortAsc;
+                } else {
+                    currentHtmlSort = sortType;
+                    isHtmlSortAsc = true;
+                }
+                allHtmlFiles = sortFiles(allHtmlFiles, currentHtmlSort, isHtmlSortAsc);
+                renderFiles(allHtmlFiles, htmlReportsList, htmlReportsPagination, 1, 'html');
+            }
+            initSortArrows();
+        });
+    });
+
     // Function to fetch and display reports
     function fetchReports() {
         fetch('/list_files')
             .then(response => response.json())
             .then(data => {
-                allTextFiles = data.text_files;
-                allHtmlFiles = data.html_files;
+                allTextFiles = sortFiles(data.text_files, currentTextSort, isTextSortAsc);
+                allHtmlFiles = sortFiles(data.html_files, currentHtmlSort, isHtmlSortAsc);
 
                 renderFiles(allTextFiles, textReportsList, textReportsPagination, 1, 'text');
                 renderFiles(allHtmlFiles, htmlReportsList, htmlReportsPagination, 1, 'html');
@@ -198,16 +264,15 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    // Event listener for Reports tab activation
-    reportsTabBtn.addEventListener('shown.bs.tab', function (event) {
-        fetchReports();
-    });
+    // Initial fetch of reports when the page loads
+    fetchReports();
+    initSortArrows();
 
-    // Initial fetch of reports when the page loads (if Reports tab is active by default, or after first switch)
-    // For now, let's just call it once on load, assuming user might switch to it.
-    // Or, better, call it when the tab is actually shown.
-    // If the reports tab is the default active tab, call fetchReports immediately.
-    if (reportsTabBtn.classList.contains('active')) {
-        fetchReports();
-    }
+    // Event listener for Reports tab activation (only re-render, don't re-fetch)
+    reportsTabBtn.addEventListener('shown.bs.tab', function (event) {
+        // Re-render files based on current sort state, no need to re-fetch
+        renderFiles(allTextFiles, textReportsList, textReportsPagination, 1, 'text');
+        renderFiles(allHtmlFiles, htmlReportsList, htmlReportsPagination, 1, 'html');
+        initSortArrows(); // Ensure arrows are correct if tab was hidden and shown
+    });
 });

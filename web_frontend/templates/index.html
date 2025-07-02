@@ -92,6 +92,16 @@
                                 Text Reports (.txt, .out)
                             </div>
                             <div class="card-body">
+                                <div class="mb-3">
+                                    <div class="btn-group btn-group-sm">
+                                        <button class="btn btn-outline-secondary sort-btn" data-type="text" data-sort="name">
+                                            Sort by Name <span class="sort-arrow" data-sort="name"></span>
+                                        </button>
+                                        <button class="btn btn-outline-secondary sort-btn" data-type="text" data-sort="date">
+                                            Sort by Date <span class="sort-arrow" data-sort="date"></span>
+                                        </button>
+                                    </div>
+                                </div>
                                 <ul id="text-reports-list" class="list-group mb-3">
                                     <!-- Text reports will be loaded here by JavaScript -->
                                 </ul>
@@ -109,6 +119,16 @@
                                 HTML Reports (.html)
                             </div>
                             <div class="card-body">
+                                <div class="mb-3">
+                                    <div class="btn-group btn-group-sm">
+                                        <button class="btn btn-outline-secondary sort-btn" data-type="html" data-sort="name">
+                                            Sort by Name <span class="sort-arrow" data-sort="name"></span>
+                                        </button>
+                                        <button class="btn btn-outline-secondary sort-btn" data-type="html" data-sort="date">
+                                            Sort by Date <span class="sort-arrow" data-sort="date"></span>
+                                        </button>
+                                    </div>
+                                </div>
                                 <ul id="html-reports-list" class="list-group mb-3">
                                     <!-- HTML reports will be loaded here by JavaScript -->
                                 </ul>
@@ -127,14 +147,14 @@
 
     <!-- Modal for Text File Viewer -->
     <div class="modal fade" id="textViewModal" tabindex="-1" aria-labelledby="textViewModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
+        <div class="modal-dialog modal-xl">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="textViewModalLabel">File Content</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body">
-                    <pre id="textViewContent" style="white-space: pre-wrap; word-wrap: break-word;"></pre>
+                <div class="modal-body" style="max-height: 80vh; overflow-y: auto;">
+                    <pre id="textViewContent" style="white-space: pre-wrap; word-wrap: break-word; font-size: 0.8rem;"></pre>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
